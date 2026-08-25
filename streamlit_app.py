@@ -1,6 +1,5 @@
 import os
 import json
-import urllib.parse
 import streamlit as st
 from google import genai
 from google.genai import types
@@ -69,15 +68,12 @@ sections는 {length_guide.split(',')[1].strip() if ',' in length_guide else '4~5
 과장된 효능 단정 표현(완치, 100% 등)은 쓰지 마세요."""
 
 
-def pollinations_url(prompt: str, width: int = 800, height: int = 500) -> str:
-    encoded = urllib.parse.quote(prompt)
-    return f"https://image.pollinations.ai/prompt/{encoded}?width={width}&height={height}&nologo=true&model=flux"
-
 
 # =========================================================
 # 고정 HTML 템플릿 렌더링
 # =========================================================
-def render_article_html(article: dict, adsense_client: str, adsense_slot: str, use_ads: bool) -> str:
+def render_article_html(article: dict, adsense_client: str, adsense_slot: str, use_ads: bool):
+    """HTML 문자열과, 순서대로 정리된 이미지 프롬프트 목록을 함께 반환합니다."""
     def ad_block():
         if not use_ads or not adsense_client.strip():
             return ""
@@ -94,13 +90,20 @@ def render_article_html(article: dict, adsense_client: str, adsense_slot: str, u
     )
 
     section_html_parts = []
+    image_prompts = []  # (순번, 소제목, 프롬프트) 순서대로 코드 밖에 따로 표시
     for i, s in enumerate(sections):
         img_prompt = s.get("image_prompt", "")
-        img_tag = ""
+        img_placeholder = ""
         if img_prompt:
-            img_url = pollinations_url(img_prompt)
-            img_tag = f"""<!-- 이미지 프롬프트: {img_prompt} -->
-<img src="{img_url}" alt="{s['heading']}" style="width: 100%; max-width: 700px; border-radius: 8px; display: block; margin: 15px auto;" />"""
+            image_prompts.append({"index": len(image_prompts) + 1, "heading": s["heading"], "prompt": img_prompt})
+            placeholder_num = len(image_prompts)
+            # 단순한 한 줄 문단만 사용 — 중첩 div/절대위치 스타일은 티스토리 에디터가
+            # 드래그 삽입 커서 위치를 못 잡고 이미지가 맨 뒤로 밀리는 원인이 됩니다.
+            img_placeholder = (
+                f'<p style="text-align:center; color:#999; border:2px dashed #ccc; '
+                f'padding:20px; margin:15px 0; border-radius:8px;">'
+                f'📷 이미지 삽입 위치 {placeholder_num} — 여기에 이 줄을 지우고 이미지를 끼워넣으세요</p>'
+            )
 
         # 두 번째 섹션 다음에 본문 중간 광고 삽입 (클릭률 높은 위치)
         mid_ad = ad_block() if (use_ads and i == 1) else ""
@@ -109,7 +112,7 @@ def render_article_html(article: dict, adsense_client: str, adsense_slot: str, u
 <div id="section{i+1}">
 <h2 style="background: #3498db; color: white; padding: 10px 15px; border-radius: 5px; font-size: 22px; margin: 30px 0 20px;">{s['heading']}</h2>
 {mid_ad}
-{img_tag}
+{img_placeholder}
 {s.get('content_html', '')}
 </div>""")
 
@@ -117,7 +120,7 @@ def render_article_html(article: dict, adsense_client: str, adsense_slot: str, u
     top_ad = ad_block()
     bottom_ad = ad_block()
 
-    return f"""<div class="blog-post">
+    html = f"""<div class="blog-post">
 <p style="font-size: 16px; line-height: 1.8; color: #333; font-weight: bold; margin-bottom: 20px;">{article.get('meta_description', '')}</p>
 
 <h1 style="background: linear-gradient(to right, #3498db, #2980b9); color: white; padding: 15px; border-radius: 8px; text-align: center; font-size: 24px; margin-bottom: 30px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">{article.get('title', '')}</h1>
@@ -146,6 +149,8 @@ def render_article_html(article: dict, adsense_client: str, adsense_slot: str, u
 <p style="font-size: 16px; line-height: 1.8; color: #333;">{article.get('conclusion', '')}</p>
 </div>
 </div>"""
+
+    return html, image_prompts
 
 
 def generate_article(client, topic: str, tone: str, length_label: str) -> dict:
@@ -201,13 +206,19 @@ with tab_single:
                 st.session_state.single_article = None
 
     if st.session_state.single_article:
-        html = render_article_html(st.session_state.single_article, adsense_client, adsense_slot, use_ads)
+        html, image_prompts = render_article_html(st.session_state.single_article, adsense_client, adsense_slot, use_ads)
         st.subheader("미리보기")
         st.components.v1.html(html, height=1200, scrolling=True)
         st.subheader("HTML 코드 (티스토리 HTML 모드에 붙여넣기)")
         st.code(html, language="html")
         st.download_button("HTML 파일 다운로드", html, file_name="article.html", mime="text/html")
-        st.caption("이미지는 Pollinations.ai 링크로 자동 삽입돼요. 영구 보존하려면 이미지를 다운로드해서 티스토리에 직접 업로드 후 src를 교체해주세요.")
+
+        if image_prompts:
+            st.subheader("이미지 프롬프트 (순서대로)")
+            st.caption("본문 안의 '📷 이미지 삽입 위치 N' 표시와 번호가 같은 순서예요. 이 프롬프트로 이미지를 만든 뒤, 해당 위치 문단을 지우고 그 자리에 이미지를 끼워넣으세요.")
+            for ip in image_prompts:
+                st.markdown(f"**{ip['index']}. {ip['heading']}**")
+                st.code(ip["prompt"], language=None)
 
 # =========================================================
 # 탭 2: 배치
@@ -244,10 +255,15 @@ with tab_batch:
                     st.error(result["error"])
                 continue
             article = result["article"]
-            html = render_article_html(article, adsense_client, adsense_slot, use_ads)
+            html, image_prompts = render_article_html(article, adsense_client, adsense_slot, use_ads)
             with st.expander(f"✅ {article.get('title', result['topic'])}"):
                 st.code(html, language="html")
                 st.download_button(
                     "HTML 파일 다운로드", html, file_name=f"article_{i+1}.html", mime="text/html",
                     key=f"dl_batch_{i}",
                 )
+                if image_prompts:
+                    st.markdown("**이미지 프롬프트 (순서대로)**")
+                    for ip in image_prompts:
+                        st.markdown(f"{ip['index']}. {ip['heading']}")
+                        st.code(ip["prompt"], language=None)
