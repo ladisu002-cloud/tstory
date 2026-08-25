@@ -10,9 +10,8 @@ load_dotenv()
 
 st.set_page_config(page_title="티스토리 SEO 블로그 원고생성기", page_icon="📝", layout="wide")
 
-# gemini-2.5-flash는 2026-08 기준 안정 버전입니다.
-# 더 최신 모델(예: gemini-3-flash)에 접근 권한이 있으면 이 값만 바꿔주세요.
-MODEL = "gemini-2.5-flash"
+# gemini-3.6-flash는 2026-08 기준 최신 안정 버전입니다.
+MODEL = "gemini-3.6-flash"
 MAX_BATCH_TOPICS = 30
 
 
