@@ -60,6 +60,12 @@ HEALTH_DISCLAIMER = (
     "치료를 대체하지 않습니다. 증상이 있다면 반드시 전문의와 상담하세요."
 )
 
+# 쿠팡파트너스 등 제휴 링크 사용 시 공정위(공정거래위원회) 고지 문구.
+# 2024.12.1 개정된 '추천·보증 등에 관한 표시·광고 심사지침' 기준: 게시물 끝부분 표시는
+# 본문이 길면 소비자가 인식하기 어렵다는 문제로 지적되어, 제목 또는 첫 부분에 표시하는 것이
+# 권장됩니다. 그래서 글 맨 앞(제목 바로 다음)에 고정으로 삽입합니다.
+DISCLOSURE_TEXT = "이 포스팅은 쿠팡 파트너스 활동의 일환으로, 이에 따른 일정액의 수수료를 제공받습니다."
+
 # 모든 이미지 프롬프트 끝에 코드가 직접 붙이는 스타일 고정 문구.
 # AI가 지시를 깜빡해서 일러스트/카툰 스타일이 섞여 나오는 걸 막기 위해,
 # 프롬프트 안 지시가 아니라 여기서 강제로 통일합니다.
@@ -271,7 +277,7 @@ sections는 {length_guide.split(',')[1].strip() if ',' in length_guide else '4~5
 # =========================================================
 # 고정 HTML 템플릿 렌더링
 # =========================================================
-def render_article_html(article: dict, adsense_client: str, adsense_slot: str, use_ads: bool):
+def render_article_html(article: dict, adsense_client: str, adsense_slot: str, use_ads: bool, use_disclosure: bool = False):
     """HTML 문자열과, 순서대로 정리된 이미지 프롬프트 목록을 함께 반환합니다."""
     def ad_block():
         if not use_ads or not adsense_client.strip():
@@ -343,12 +349,19 @@ def render_article_html(article: dict, adsense_client: str, adsense_slot: str, u
     # Q&A가 없는 경우를 대비해, 이전까지 쓰던 "결론 직전" 위치를 폴백으로 둡니다.
     fallback_bottom_ad = ad_block() if (use_ads and not qa_html) else ""
 
+    disclosure_html = ""
+    if use_disclosure:
+        disclosure_html = f'''<div style="background-color: #f2f2f2; border-radius: 6px; padding: 10px 15px; margin: 0 0 20px 0; font-size: 13px; color: #666;">
+💰 {DISCLOSURE_TEXT}
+</div>
+'''
+
     html = f"""<div class="blog-post">
 <p style="font-size: 16px; line-height: 1.8; color: #333; font-weight: bold; margin-bottom: 20px;">{article.get('meta_description', '')}</p>
 
 <h1 style="background: linear-gradient(to right, #3498db, #2980b9); color: white; padding: 15px; border-radius: 8px; text-align: center; font-size: 24px; margin-bottom: 30px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">{article.get('title', '')}</h1>
 
-<p style="font-size: 16px; line-height: 1.8; color: #333;">{article.get('intro', '')}</p>
+{disclosure_html}<p style="font-size: 16px; line-height: 1.8; color: #333;">{article.get('intro', '')}</p>
 
 <div style="background: linear-gradient(to right, #3498db, #2980b9); color: white; padding: 15px; border-radius: 8px; text-align: center; margin: 20px 0 30px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
 <a style="color: white; text-decoration: none; font-weight: bold; font-size: 18px;" href="#">{article.get('cta_text', '')}</a>
@@ -468,6 +481,10 @@ with st.sidebar:
     use_ads = st.checkbox("애드센스 광고 위치 자동 삽입", value=True)
     adsense_client = st.text_input("애드센스 클라이언트 ID", value=os.getenv("ADSENSE_CLIENT_ID", "ca-pub-여기에본인ID"))
     adsense_slot = st.text_input("애드센스 슬롯 ID", value=os.getenv("ADSENSE_SLOT_ID", "여기에본인슬롯ID"))
+    use_disclosure = st.checkbox(
+        "쿠팡파트너스 링크 포함 (공정위 문구 자동 삽입)", value=False,
+        help="제목 바로 다음, 본문 시작 전에 '이 포스팅은 쿠팡 파트너스 활동의 일환으로...' 문구를 고정으로 넣습니다.",
+    )
 
 if not api_key:
     st.info("왼쪽 사이드바에 Gemini API 키를 입력하면 시작할 수 있어요.")
@@ -517,7 +534,7 @@ with tab_single:
                 f"오류 내용: {st.session_state.single_research_error}"
             )
 
-        html, image_prompts, thumbnail_prompt = render_article_html(st.session_state.single_article, adsense_client, adsense_slot, use_ads)
+        html, image_prompts, thumbnail_prompt = render_article_html(st.session_state.single_article, adsense_client, adsense_slot, use_ads, use_disclosure)
         st.subheader("미리보기")
         st.components.v1.html(html, height=1200, scrolling=True)
         st.subheader("HTML 코드 (티스토리 HTML 모드에 붙여넣기)")
@@ -579,7 +596,7 @@ with tab_batch:
                     st.error(result["error"])
                 continue
             article = result["article"]
-            html, image_prompts, thumbnail_prompt = render_article_html(article, adsense_client, adsense_slot, use_ads)
+            html, image_prompts, thumbnail_prompt = render_article_html(article, adsense_client, adsense_slot, use_ads, use_disclosure)
             status_icon = "✅🔍" if result.get("research_source") else "✅⚠️"
             with st.expander(f"{status_icon} {article.get('title', result['topic'])}"):
                 if result.get("research_source"):
