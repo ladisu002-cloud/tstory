@@ -1,7 +1,9 @@
 import os
 import re
 import json
+import urllib.parse
 import requests
+from bs4 import BeautifulSoup
 import streamlit as st
 from google import genai
 from google.genai import types
@@ -58,6 +60,14 @@ HEALTH_DISCLAIMER = (
     "치료를 대체하지 않습니다. 증상이 있다면 반드시 전문의와 상담하세요."
 )
 
+# 모든 이미지 프롬프트 끝에 코드가 직접 붙이는 스타일 고정 문구.
+# AI가 지시를 깜빡해서 일러스트/카툰 스타일이 섞여 나오는 걸 막기 위해,
+# 프롬프트 안 지시가 아니라 여기서 강제로 통일합니다.
+IMAGE_STYLE_SUFFIX = (
+    ", realistic photograph, natural lighting, high detail, no illustration, "
+    "no cartoon, no drawing, no vector art, no 3D render"
+)
+
 
 def _strip_tags(text: str) -> str:
     return re.sub(r"<[^>]+>", "", text or "")
@@ -112,6 +122,19 @@ def research_topic_wikipedia(topic: str) -> str:
         except requests.RequestException:
             continue
     return "\n".join(lines)
+
+
+def fetch_trusted_site_text(url: str, max_chars: int = 3000) -> str:
+    """지정한 URL 페이지의 본문 텍스트를 가져옵니다 (완전 무료, 키 불필요).
+    사이트가 자동 접근을 막아둔 경우(로봇 차단, 403 등) 예외가 날 수 있어 호출부에서 try/except로 감싸주세요."""
+    resp = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0 (compatible; ArticleResearchBot/1.0)"})
+    resp.raise_for_status()
+    soup = BeautifulSoup(resp.text, "html.parser")
+    for tag in soup(["script", "style", "nav", "header", "footer", "aside"]):
+        tag.decompose()
+    text = soup.get_text(separator="\n")
+    lines = [line.strip() for line in text.split("\n") if line.strip()]
+    return "\n".join(lines)[:max_chars]
 
 
 # =========================================================
@@ -216,23 +239,27 @@ def build_article_prompt(topic: str, tone: str, length_label: str, research: str
 {seo_rules_block}
 
 아래 JSON 형식으로만 응답하세요. 다른 설명, 코드펜스, 다른 텍스트는 절대 붙이지 마세요.
+모든 이미지 프롬프트(thumbnail_prompt, 각 section의 image_prompt)는 반드시 사실적인 사진 스타일로만 작성하세요.
+일러스트, 카툰, 손그림, 벡터 아트, 애니메이션 스타일은 절대 쓰지 마세요 — 실제 카메라로 찍은 듯한 사진 묘사만 쓰세요.
 
 {{
   "meta_description": "검색결과 요약에 쓰일 1~2문장 (60자 내외, 핵심 키워드 포함)",
   "title": "SEO에 유리하면서 클릭하고 싶은 제목 (30자 내외)",
   "intro": "도입부. 짧은 인사나 공감 질문으로 시작하고, 이 글을 쓰게 된 계기를 1인칭으로 2~3문장 밝히기",
   "cta_text": "본문 상단에 넣을 짧은 행동유도 문구 (예: 🔍 OOO 확인해보세요!)",
+  "thumbnail_prompt": "블로그 썸네일용 대표 이미지의 영어 프롬프트. 사진 스타일, 주제를 한눈에 보여주는 구도, 텍스트나 로고 없이",
   "sections": [
     {{
       "heading": "소제목",
       "content_html": "본문 내용. <p>, <b>, <ul><li> 태그만 사용한 HTML 조각. 1인칭 공감형 구어체 존댓말 유지, 단정적 치료 효과 주장 금지.",
-      "image_prompt": "이 섹션과 어울리는 이미지를 위한 영어 프롬프트 (사진 스타일, 구체적으로)"
+      "image_prompt": "이 섹션과 어울리는 이미지의 영어 프롬프트. 사진 스타일, 구체적인 피사체·구도·조명 묘사"
     }}
   ],
   "qa": [
     {{"question": "독자가 흔히 궁금해할 질문", "answer": "짧고 명확한 답변, 1~2문장"}}
   ],
-  "conclusion": "마무리 문단. 요약이나 다짐 한두 문장 + 개인차가 있을 수 있다는 담백한 단서"
+  "conclusion": "마무리 문단. 요약이나 다짐 한두 문장 + 개인차가 있을 수 있다는 담백한 단서",
+  "tags": ["검색 노출에 도움될 태그 5~10개, 짧은 키워드 형태, # 없이"]
 }}
 
 sections는 {length_guide.split(',')[1].strip() if ',' in length_guide else '4~5개'} 정도로, qa는 3~4개로 구성하세요.
@@ -261,13 +288,17 @@ def render_article_html(article: dict, adsense_client: str, adsense_slot: str, u
         for i, s in enumerate(sections)
     )
 
+    thumbnail_prompt = article.get("thumbnail_prompt", "")
+    thumbnail_full_prompt = (thumbnail_prompt + IMAGE_STYLE_SUFFIX) if thumbnail_prompt else ""
+
     section_html_parts = []
-    image_prompts = []  # (순번, 소제목, 프롬프트) 순서대로 코드 밖에 따로 표시
+    image_prompts = []  # 본문 [이미지N] 표시와 번호가 같은, 섹션별 프롬프트 목록 (썸네일은 별도)
     for i, s in enumerate(sections):
         img_prompt = s.get("image_prompt", "")
         img_placeholder = ""
         if img_prompt:
-            image_prompts.append({"index": len(image_prompts) + 1, "heading": s["heading"], "prompt": img_prompt})
+            full_prompt = img_prompt + IMAGE_STYLE_SUFFIX
+            image_prompts.append({"index": len(image_prompts) + 1, "heading": s["heading"], "prompt": full_prompt})
             placeholder_num = len(image_prompts)
             # 단순한 한 줄 문단만 사용 — 중첩 div/절대위치 스타일은 티스토리 에디터가
             # 드래그 삽입 커서 위치를 못 잡고 이미지가 맨 뒤로 밀리는 원인이 됩니다.
@@ -349,51 +380,63 @@ def render_article_html(article: dict, adsense_client: str, adsense_slot: str, u
 </div>
 </div>"""
 
-    return html, image_prompts
+    return html, image_prompts, thumbnail_full_prompt
 
 
-def generate_article(client, topic: str, tone: str, length_label: str, search_method: str,
-                      naver_id: str = "", naver_secret: str = "", use_seo_rules: bool = False):
-    """(article dict, research_used: bool, research_error: str|None)를 반환합니다."""
+def generate_article(client, topic: str, tone: str, length_label: str,
+                      naver_id: str = "", naver_secret: str = "", use_seo_rules: bool = False,
+                      trusted_url: str = ""):
+    """(article dict, research_source: str, research_error: str|None)를 반환합니다.
+    검색 방식은 사용자가 고르지 않고 자동으로 결정합니다:
+    지정 사이트 URL이 있으면 그 페이지를 먼저 쓰고, 없거나 실패하면 네이버(키 있을 때) → 위키백과 순으로 대체합니다."""
     research = ""
     research_error = None
-    if search_method == "위키백과 검색 (무료·가입불필요)":
+    research_source = ""
+
+    if trusted_url.strip():
+        url = trusted_url.strip()
+        if "{topic}" in url:
+            url = url.replace("{topic}", urllib.parse.quote(topic))
+        try:
+            research = fetch_trusted_site_text(url)
+            if research:
+                research_source = "지정한 사이트"
+            else:
+                research_error = "지정한 사이트에서 내용을 가져오지 못했어요."
+        except Exception as e:
+            research_error = f"지정한 사이트 접근 실패: {e}"
+
+    if not research and naver_id and naver_secret:
+        try:
+            research = research_topic_naver(topic, naver_id, naver_secret)
+            if research:
+                research_source = "네이버 검색"
+        except Exception as e:
+            if not research_error:
+                research_error = str(e)
+
+    if not research:  # 위 방법이 다 없거나 실패 → 위키백과로 최종 대체
         try:
             research = research_topic_wikipedia(topic)
-            if not research:
-                research_error = "위키백과에서 관련 문서를 찾지 못했어요."
+            if research:
+                research_source = "위키백과"
+            elif not research_error:
+                research_error = "지정 사이트·네이버·위키백과 모두 관련 정보를 찾지 못했어요."
         except Exception as e:
-            research_error = str(e)
-    elif search_method == "네이버 검색 (무료, 키 필요)":
-        if not naver_id or not naver_secret:
-            research_error = "네이버 Client ID/Secret이 입력되지 않았어요."
-        else:
-            try:
-                research = research_topic_naver(topic, naver_id, naver_secret)
-                if not research:
-                    research_error = "검색 결과가 없었어요."
-            except Exception as e:
+            if not research_error:
                 research_error = str(e)
-    elif search_method == "Gemini 웹검색 (유료)":
-        try:
-            research = research_topic_gemini(client, topic)
-        except Exception as e:
-            research_error = str(e)
-    # search_method == "사용 안 함" 이면 research는 빈 문자열 그대로
 
     seo_rules = ""
     if use_seo_rules:
         try:
-            if search_method == "네이버 검색 (무료, 키 필요)" and naver_id and naver_secret:
+            if naver_id and naver_secret:
                 seo_rules = research_seo_rules_naver(naver_id, naver_secret)
-            elif search_method == "Gemini 웹검색 (유료)":
-                seo_rules = research_seo_rules_gemini(client)
         except Exception:
             pass  # SEO 규칙 검색은 실패해도 글쓰기 자체는 계속 진행
 
     prompt = build_article_prompt(topic, tone, length_label, research, seo_rules)
     article = call_gemini_json(client, prompt)
-    return article, bool(research), research_error
+    return article, research_source, research_error
 
 
 # =========================================================
@@ -408,19 +451,18 @@ with st.sidebar:
     st.divider()
     tone = st.selectbox("말투", list(TONE_OPTIONS.keys()))
     length_label = st.selectbox("분량", ["짧게 (5문단 내외)", "보통 (기본)", "길게 (상세)"], index=1)
-    search_method = st.selectbox(
-        "신뢰할 수 있는 정보 검색 방식",
-        ["위키백과 검색 (무료·가입불필요)", "네이버 검색 (무료, 키 필요)", "Gemini 웹검색 (유료)", "사용 안 함"],
-        help="위키백과는 가입 없이 바로 됩니다. 네이버 검색은 최근 네이버클라우드플랫폼으로 이전되어 카드 등록이 필요할 수 있어요. Gemini 웹검색은 Google Cloud 결제 등록이 필요합니다.",
+    trusted_url = st.text_input(
+        "신뢰하는 건강정보 사이트 URL (선택)",
+        placeholder="예: https://www.amc.seoul.kr/asan/healthinfo/disease/diseaseDetail.do?contentId={topic}",
+        help="고정 URL을 넣으면 매번 그 페이지만 참고합니다. 사이트 안에서 직접 검색해보고 나온 결과 URL에서 검색어 부분을 {topic}으로 바꿔 넣으면, 주제마다 자동으로 그 검색어로 바꿔서 요청해요.",
     )
-    naver_id, naver_secret = "", ""
-    if search_method == "네이버 검색 (무료, 키 필요)":
+    with st.expander("네이버 검색 키 (선택 — 없어도 위키백과로 자동 검색됨)"):
         naver_id = st.text_input("네이버 Client ID", value=os.getenv("NAVER_CLIENT_ID", ""))
         naver_secret = st.text_input("네이버 Client Secret", value=os.getenv("NAVER_CLIENT_SECRET", ""), type="password")
-        st.caption("⚠️ 네이버가 검색 API를 네이버클라우드플랫폼(NCP)으로 이전해서, 신규 발급은 개발자센터가 아니라 NCP 계정으로 진행해야 하고 카드 등록이 필요할 수 있어요.")
+        st.caption("⚠️ 네이버가 검색 API를 네이버클라우드플랫폼(NCP)으로 이전해서, 신규 발급 시 카드 등록이 필요할 수 있어요. 안 넣으셔도 위키백과로 자동 검색되니 필수는 아닙니다.")
     use_seo_rules = st.checkbox(
         "최신 SEO 규칙도 검색해서 반영", value=False,
-        help="티스토리 상위노출 기준(제목 길이, 키워드 배치 등)을 검색해서 글쓰기에 참고합니다. 위 검색 방식과 같은 방식을 사용해요 (위키백과 선택 시에는 건너뜁니다).",
+        help="네이버 검색 키가 있을 때만 동작합니다 (티스토리 상위노출 기준을 검색해서 참고).",
     )
     st.divider()
     use_ads = st.checkbox("애드센스 광고 위치 자동 삽입", value=True)
@@ -438,8 +480,8 @@ st.caption("주제만 입력하면 목차·소제목이 갖춰진 SEO 글을 고
 
 if "single_article" not in st.session_state:
     st.session_state.single_article = None
-if "single_research_used" not in st.session_state:
-    st.session_state.single_research_used = False
+if "single_research_source" not in st.session_state:
+    st.session_state.single_research_source = ""
 if "single_research_error" not in st.session_state:
     st.session_state.single_research_error = None
 if "batch_results" not in st.session_state:
@@ -456,33 +498,40 @@ with tab_single:
     if st.button("글 생성하기", type="primary", disabled=not topic.strip()):
         with st.spinner("배경지식을 확인하고, SEO 글을 작성하고 있어요..."):
             try:
-                article, research_used, research_error = generate_article(
-                    client, topic, tone, length_label, search_method, naver_id, naver_secret, use_seo_rules
+                article, research_source, research_error = generate_article(
+                    client, topic, tone, length_label, naver_id, naver_secret, use_seo_rules, trusted_url
                 )
                 st.session_state.single_article = article
-                st.session_state.single_research_used = research_used
+                st.session_state.single_research_source = research_source
                 st.session_state.single_research_error = research_error
             except Exception as e:
                 st.error(f"생성 중 오류가 발생했어요: {e}")
                 st.session_state.single_article = None
 
     if st.session_state.single_article:
-        if st.session_state.single_research_used:
-            st.success("✅ 검색으로 확인한 정보를 기반으로 작성됐어요.")
-        elif search_method != "사용 안 함" and st.session_state.single_research_error:
+        if st.session_state.single_research_source:
+            st.success(f"✅ {st.session_state.single_research_source}으로 확인한 정보를 기반으로 작성됐어요.")
+        elif st.session_state.single_research_error:
             st.warning(
                 f"⚠️ 검색이 실패해서 일반 지식만으로 작성됐어요. 이 글은 발행 전에 직접 사실관계를 확인해주세요.\n\n"
                 f"오류 내용: {st.session_state.single_research_error}"
             )
-        elif search_method == "사용 안 함":
-            st.info("검색을 끄고 생성했어요. 정확성이 중요한 건강 정보이니 발행 전에 사실관계를 확인해주세요.")
 
-        html, image_prompts = render_article_html(st.session_state.single_article, adsense_client, adsense_slot, use_ads)
+        html, image_prompts, thumbnail_prompt = render_article_html(st.session_state.single_article, adsense_client, adsense_slot, use_ads)
         st.subheader("미리보기")
         st.components.v1.html(html, height=1200, scrolling=True)
         st.subheader("HTML 코드 (티스토리 HTML 모드에 붙여넣기)")
         st.code(html, language="html")
         st.download_button("HTML 파일 다운로드", html, file_name="article.html", mime="text/html")
+
+        if thumbnail_prompt:
+            st.subheader("썸네일 프롬프트")
+            st.code(thumbnail_prompt, language=None)
+
+        tags = st.session_state.single_article.get("tags", [])
+        if tags:
+            st.subheader("태그 (티스토리 발행 시 태그 입력창에 붙여넣기)")
+            st.code(", ".join(tags), language=None)
 
         if image_prompts:
             st.subheader("이미지 프롬프트 (순서대로)")
@@ -511,11 +560,11 @@ with tab_batch:
         for i, t in enumerate(topics):
             progress.progress(i / len(topics), text=f"({i+1}/{len(topics)}) '{t}' 작성 중...")
             try:
-                article, research_used, research_error = generate_article(
-                    client, t, tone, length_label, search_method, naver_id, naver_secret, use_seo_rules
+                article, research_source, research_error = generate_article(
+                    client, t, tone, length_label, naver_id, naver_secret, use_seo_rules, trusted_url
                 )
                 st.session_state.batch_results.append(
-                    {"topic": t, "article": article, "research_used": research_used, "research_error": research_error}
+                    {"topic": t, "article": article, "research_source": research_source, "research_error": research_error}
                 )
             except Exception as e:
                 st.session_state.batch_results.append({"topic": t, "error": str(e)})
@@ -530,18 +579,25 @@ with tab_batch:
                     st.error(result["error"])
                 continue
             article = result["article"]
-            html, image_prompts = render_article_html(article, adsense_client, adsense_slot, use_ads)
-            status_icon = "✅🔍" if result.get("research_used") else "✅⚠️"
+            html, image_prompts, thumbnail_prompt = render_article_html(article, adsense_client, adsense_slot, use_ads)
+            status_icon = "✅🔍" if result.get("research_source") else "✅⚠️"
             with st.expander(f"{status_icon} {article.get('title', result['topic'])}"):
-                if result.get("research_used"):
-                    st.caption("웹검색 기반으로 작성됨")
+                if result.get("research_source"):
+                    st.caption(f"{result['research_source']} 기반으로 작성됨")
                 else:
-                    st.caption("웹검색 없이 작성됨 — 발행 전 사실관계 확인 권장")
+                    st.caption("검색 없이 작성됨 — 발행 전 사실관계 확인 권장")
                 st.code(html, language="html")
                 st.download_button(
                     "HTML 파일 다운로드", html, file_name=f"article_{i+1}.html", mime="text/html",
                     key=f"dl_batch_{i}",
                 )
+                if thumbnail_prompt:
+                    st.markdown("**썸네일 프롬프트**")
+                    st.code(thumbnail_prompt, language=None)
+                tags = article.get("tags", [])
+                if tags:
+                    st.markdown("**태그**")
+                    st.code(", ".join(tags), language=None)
                 if image_prompts:
                     st.markdown("**이미지 프롬프트 (순서대로)**")
                     for ip in image_prompts:
