@@ -146,22 +146,78 @@ def fetch_trusted_site_text(url: str, max_chars: int = 3000) -> str:
 # =========================================================
 # Gemini 호출
 # =========================================================
-def call_gemini_json(client, prompt: str) -> dict:
-    resp = client.models.generate_content(
-        model=MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            max_output_tokens=4000,
-            response_mime_type="application/json",
-        ),
-    )
-    text = (resp.text or "").strip()
-    # 혹시 코드펜스가 붙어오면 제거
-    if text.startswith("```"):
-        text = text.split("```")[1]
-        if text.startswith("json"):
-            text = text[4:]
-    return json.loads(text)
+# Gemini의 structured output 기능으로 JSON 형식 자체를 강제합니다.
+# (자유 텍스트로 "JSON만 출력해줘"라고 지시하는 것보다 훨씬 깨질 확률이 낮아집니다.)
+ARTICLE_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "meta_description": {"type": "STRING"},
+        "title": {"type": "STRING"},
+        "intro": {"type": "STRING"},
+        "cta_text": {"type": "STRING"},
+        "thumbnail_prompt": {"type": "STRING"},
+        "sections": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "heading": {"type": "STRING"},
+                    "content_html": {"type": "STRING"},
+                    "image_prompt": {"type": "STRING"},
+                },
+                "required": ["heading", "content_html", "image_prompt"],
+            },
+        },
+        "qa": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "question": {"type": "STRING"},
+                    "answer": {"type": "STRING"},
+                },
+                "required": ["question", "answer"],
+            },
+        },
+        "conclusion": {"type": "STRING"},
+        "tags": {"type": "ARRAY", "items": {"type": "STRING"}},
+    },
+    "required": ["meta_description", "title", "intro", "cta_text", "sections", "conclusion"],
+}
+
+# 분량이 길수록 응답이 길어져서 토큰 한도에 걸려 JSON이 중간에 잘리는 걸 방지하기 위해,
+# 분량별로 여유 있게 한도를 늘립니다.
+MAX_TOKENS_BY_LENGTH = {
+    "짧게 (5문단 내외)": 4000,
+    "보통 (기본)": 6000,
+    "길게 (상세)": 9000,
+}
+
+
+def call_gemini_json(client, prompt: str, length_label: str = "보통 (기본)") -> dict:
+    max_tokens = MAX_TOKENS_BY_LENGTH.get(length_label, 6000)
+    last_error = None
+    for attempt in range(2):  # 실패하면 한 번 더 재시도
+        resp = client.models.generate_content(
+            model=MODEL,
+            contents=prompt if attempt == 0 else prompt + "\n\n(이전 응답이 유효한 JSON이 아니었습니다. 절대 잘리지 않게, 반드시 완전한 JSON 객체 하나만 출력하세요.)",
+            config=types.GenerateContentConfig(
+                max_output_tokens=max_tokens,
+                response_mime_type="application/json",
+                response_schema=ARTICLE_SCHEMA,
+            ),
+        )
+        text = (resp.text or "").strip()
+        if text.startswith("```"):
+            text = text.split("```")[1]
+            if text.startswith("json"):
+                text = text[4:]
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError as e:
+            last_error = e
+            continue
+    raise last_error
 
 
 def research_topic_gemini(client, topic: str) -> str:
@@ -448,7 +504,7 @@ def generate_article(client, topic: str, tone: str, length_label: str,
             pass  # SEO 규칙 검색은 실패해도 글쓰기 자체는 계속 진행
 
     prompt = build_article_prompt(topic, tone, length_label, research, seo_rules)
-    article = call_gemini_json(client, prompt)
+    article = call_gemini_json(client, prompt, length_label)
     return article, research_source, research_error
 
 
