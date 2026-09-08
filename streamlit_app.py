@@ -1,6 +1,8 @@
 import os
 import re
 import json
+import time
+import random
 import urllib.parse
 import requests
 from bs4 import BeautifulSoup
@@ -13,9 +15,50 @@ load_dotenv()
 
 st.set_page_config(page_title="티스토리 SEO 블로그 원고생성기", page_icon="📝", layout="wide")
 
-# gemini-3.6-flash는 2026-08 기준 최신 안정 버전입니다.
-MODEL = "gemini-3.6-flash"
+# 특정 버전(예: gemini-3.6-flash)을 고정하면, 그 버전이 구글 쪽에서 우선순위가 낮아지거나
+# 트래픽이 몰릴 때 503(UNAVAILABLE)이 유독 자주 나는 걸 겪은 적이 있어서,
+# 항상 최신 안정 버전을 가리키는 별칭으로 바꾸고, 과부하 시 lite 모델로 자동 대체합니다.
+MODEL_FALLBACKS = ("gemini-flash-latest", "gemini-flash-lite-latest")
+MODEL = MODEL_FALLBACKS[0]  # 기존 코드 호환용 (직접 모델명이 필요한 곳에서 기본값으로 참조)
 MAX_BATCH_TOPICS = 30
+
+# 429(할당량 초과)·503(서버 과부하)은 대개 "지금 이 순간만" 문제라, 잠깐 대기 후
+# 재시도하거나 다른 모델로 넘어가면 성공하는 경우가 많습니다.
+_TRANSIENT_MARKERS = ("429", "RESOURCE_EXHAUSTED", "503", "UNAVAILABLE")
+
+
+def _is_transient_error(err_str: str) -> bool:
+    return any(marker in err_str for marker in _TRANSIENT_MARKERS)
+
+
+def _backoff_sleep(attempt: int):
+    time.sleep(min(2 ** attempt, 20) + random.uniform(0, 1.5))
+
+
+def _generate_with_retry(client, **gen_kwargs):
+    """client.models.generate_content(**gen_kwargs)를 모델 별칭 순서대로 시도하되,
+    429/503처럼 일시적인 에러면 잠깐 대기 후 같은 모델로 재시도하다가 다음 모델로 넘어갑니다.
+    gen_kwargs에 'model' 키를 주면 그 모델 하나만 쓰고, 없으면 MODEL_FALLBACKS를 순회합니다."""
+    fixed_model = gen_kwargs.pop("model", None)
+    models_to_try = (fixed_model,) if fixed_model else MODEL_FALLBACKS
+    last_err = None
+    attempt = 0
+    for m in models_to_try:
+        retries_left = 2
+        while True:
+            try:
+                return client.models.generate_content(model=m, **gen_kwargs)
+            except Exception as e:
+                last_err = e
+                if _is_transient_error(str(e)) and retries_left > 0:
+                    retries_left -= 1
+                    _backoff_sleep(attempt)
+                    attempt += 1
+                    continue
+                break
+        if not _is_transient_error(str(last_err)):
+            break
+    raise last_err
 
 TONE_OPTIONS = {
     "친근한 존댓말": "친근하고 다정한 존댓말, 어려운 용어를 풀어서 설명",
@@ -198,8 +241,8 @@ def call_gemini_json(client, prompt: str, length_label: str = "보통 (기본)")
     max_tokens = MAX_TOKENS_BY_LENGTH.get(length_label, 6000)
     last_error = None
     for attempt in range(2):  # 실패하면 한 번 더 재시도
-        resp = client.models.generate_content(
-            model=MODEL,
+        resp = _generate_with_retry(
+            client,
             contents=prompt if attempt == 0 else prompt + "\n\n(이전 응답이 유효한 JSON이 아니었습니다. 절대 잘리지 않게, 반드시 완전한 JSON 객체 하나만 출력하세요.)",
             config=types.GenerateContentConfig(
                 max_output_tokens=max_tokens,
@@ -227,8 +270,8 @@ def research_topic_gemini(client, topic: str) -> str:
 - 공신력 있는 출처(의학 기관, 논문, 병원 등) 기반 정보만 반영하세요.
 - 효능을 과장하거나 특정 질병의 치료·완치를 단정하는 표현은 배제하세요.
 - 8~12줄 정도로, 사실 위주로 핵심만 정리하세요."""
-    resp = client.models.generate_content(
-        model=MODEL,
+    resp = _generate_with_retry(
+        client,
         contents=prompt,
         config=types.GenerateContentConfig(
             max_output_tokens=1500,
@@ -244,8 +287,8 @@ def research_seo_rules_gemini(client, platform_hint: str = "티스토리") -> st
         f"{platform_hint} 블로그 상위노출 SEO 규칙 최신 기준을 검색해서 알려줘. "
         "제목 글자수, 본문 분량, 키워드 배치, 이미지 개수, 태그, 저품질/금지 패턴 등 핵심만 정리해줘."
     )
-    resp = client.models.generate_content(
-        model=MODEL,
+    resp = _generate_with_retry(
+        client,
         contents=query,
         config=types.GenerateContentConfig(
             max_output_tokens=1000,
@@ -632,6 +675,8 @@ with tab_batch:
         progress = st.progress(0, text="시작합니다...")
         for i, t in enumerate(topics):
             progress.progress(i / len(topics), text=f"({i+1}/{len(topics)}) '{t}' 작성 중...")
+            if i > 0:
+                time.sleep(2)  # 주제 사이 간격을 둬서 분당 요청 한도(429/503)를 덜 건드림
             try:
                 article, research_source, research_error = generate_article(
                     client, t, tone, length_label, naver_id, naver_secret, use_seo_rules, trusted_url
