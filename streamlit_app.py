@@ -13,12 +13,12 @@ from dotenv import load_dotenv
 load_dotenv()
 
 st.set_page_config(
-    page_title="네이버 콘텐츠 기회 분석기 V1.5",
+    page_title="네이버 콘텐츠 기회 분석기 V1.7",
     page_icon="🔎",
     layout="wide",
 )
 
-CATEGORIES = ["건강", "생활정보", "여행", "육아", "제품리뷰", "정부지원", "기타"]
+CATEGORIES = ["리뷰", "맛집", "일상", "쇼핑정보", "여행정보", "핫이슈", "기타정보"]
 MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 
 def clean_html(text):
@@ -232,6 +232,20 @@ ARTICLE_SCHEMA = {
         "secondary_keywords": {"type": "ARRAY", "items": {"type": "STRING"}},
         "long_tail_keywords": {"type": "ARRAY", "items": {"type": "STRING"}},
         "outline": {"type": "ARRAY", "items": {"type": "STRING"}},
+        "toc_included": {"type": "BOOLEAN"},
+        "toc_reason": {"type": "STRING"},
+        "gap_coverage": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "gap": {"type": "STRING"},
+                    "status": {"type": "STRING"},
+                    "evidence": {"type": "STRING"}
+                },
+                "required": ["gap", "status", "evidence"]
+            }
+        },
         "body_markdown": {"type": "STRING"},
         "faq": {
             "type": "ARRAY",
@@ -261,7 +275,7 @@ ARTICLE_SCHEMA = {
     "required": [
         "seo_title", "home_title", "thumbnail_text", "meta_description",
         "main_keyword", "secondary_keywords", "long_tail_keywords",
-        "outline", "body_markdown", "faq", "image_plan", "tags",
+        "outline", "toc_included", "toc_reason", "gap_coverage", "body_markdown", "faq", "image_plan", "tags",
     ],
 }
 
@@ -317,9 +331,14 @@ def write_with_ai(client, analysis_payload, writing_options):
 6) 사용자가 직접 경험했다고 주어지지 않은 내용을 1인칭 체험처럼 쓰지 않기
 7) 모바일에서 읽기 쉽게 짧은 문단과 명확한 소제목 사용
 8) 한국어 문체는 친근한 존댓말(~해요, ~랍니다)을 기본으로 하기
+9) 본문은 반드시 자연스러운 서론으로 시작하세요. 첫 번째 번호형 소제목이나 H2/H3보다 서론이 먼저 와야 합니다.
+10) 홈판용 글이라도 서론을 생략하지 마세요. 홈판에서는 첫 2~4개 문단의 공감·문제제기·궁금증 유발이 중요합니다.
+11) 목차는 모든 글에 강제로 넣지 마세요. 카테고리, 검색의도, 글의 예상 길이를 보고 판단하세요. 정보형/여행정보/긴 핫이슈·쇼핑정보 글은 목차를 권장하고, 맛집/일상/짧은 리뷰는 생략할 수 있습니다.
+12) 목차를 넣는다면 반드시 '서론 → 목차 → 본론' 순서로 배치하세요.
+13) 분석에서 제시된 콘텐츠 GAP이 있다면 본문에 실제로 반영하고, 각 GAP의 반영 여부를 gap_coverage에 기록하세요.
 
 작성 조건:
-- 카테고리: {writing_options["category"]}
+- 카테고리: {writing_options["category"]} (사용자 블로그 실제 카테고리)
 - 톤: {writing_options["tone"]}
 - 목표 분량: {writing_options["length"]}
 - 메인 키워드: {analysis_payload["keyword"]}
@@ -328,7 +347,11 @@ def write_with_ai(client, analysis_payload, writing_options):
 분석 데이터:
 {json.dumps(analysis_payload, ensure_ascii=False, indent=2)}
 
-body_markdown에는 제목을 반복하지 말고 H2/H3 마크다운을 사용하세요.
+body_markdown에는 글 제목을 반복하지 말고 H2/H3 마크다운을 사용하세요.
+body_markdown의 시작은 번호형 H2/H3가 아니라 2~4개의 서론 문단이어야 합니다.
+목차를 넣는 경우 서론 다음에 '### 목차'를 두고, 그 다음부터 본론 소제목을 시작하세요.
+toc_included에는 목차를 실제로 넣었는지 true/false를 기록하고, toc_reason에는 넣거나 생략한 이유를 짧게 적으세요.
+content_gaps가 있다면 gap_coverage에 각 GAP을 그대로 적고 status는 '반영' 또는 '부분 반영' 또는 '미반영' 중 하나로만 기록하세요. evidence에는 본문에서 어떻게 반영했는지 적으세요.
 FAQ는 3~5개.
 이미지 계획은 실제 촬영/스크린샷/인포그래픽 등 현실적으로 제작 가능한 형태로 작성하세요.
 이미지 프롬프트는 영어로 작성하세요.
@@ -341,17 +364,34 @@ def seo_check(article, analysis):
     text = article.get("body_markdown", "")
     keyword = analysis.get("keyword", "")
     count = text.count(keyword) if keyword else 0
+    gaps = article.get("gap_coverage", []) or []
+    valid_status = {"반영", "완료", "충분히 반영", "해당 없음", "없음"}
+    gap_statuses = [str(x.get("status", "")).strip() for x in gaps]
+    if not analysis.get("content_gaps"):
+        gap_label = "콘텐츠 GAP 없음"
+        gap_ok = True
+    elif gaps and all(any(v in st for v in valid_status) for st in gap_statuses):
+        gap_label = f"콘텐츠 GAP 반영 완료 ({len(gaps)}/{len(gaps)})"
+        gap_ok = True
+    elif gaps:
+        done = sum(any(v in st for v in valid_status) for st in gap_statuses)
+        gap_label = f"콘텐츠 GAP 일부 반영 ({done}/{len(gaps)})"
+        gap_ok = False
+    else:
+        gap_label = "콘텐츠 GAP 보완 필요"
+        gap_ok = False
     checks = {
         "메인 키워드 반영": count >= 2,
         "검색의도 반영": bool(analysis.get("search_intent")),
-        "콘텐츠 GAP 반영": any(g.lower() in text.lower() for g in analysis.get("content_gaps", [])[:3]) if analysis.get("content_gaps") else True,
+        gap_label: gap_ok,
+        "서론 포함": bool(re.search(r"(^|\n)\s*(서론|들어가며|먼저|요즘|최근)", text, re.I)) or len(text.strip().split("\n\n")) >= 2,
         "FAQ 포함": len(article.get("faq", [])) >= 3,
         "이미지 계획 포함": len(article.get("image_plan", [])) >= 3,
         "홈판 제목 별도 생성": bool(article.get("home_title")),
         "썸네일 문구 생성": bool(article.get("thumbnail_text")),
     }
     score = round(sum(checks.values()) / len(checks) * 100)
-    return score, checks, count
+    return score, checks, count, gaps, gap_label
 
 def build_analysis_payload(keyword, category, trend, blog, news, web, images, own_posts, shopping, benchmark):
     return {
@@ -696,6 +736,25 @@ if article:
     st.markdown("### 본문")
     st.markdown(article.get("body_markdown", ""))
 
+    st.markdown("### 네이버 스마트에디터용 본문")
+    st.caption("아래 내용은 마크다운 기호를 제거한 순수 본문입니다. 복사 아이콘으로 복사한 뒤 네이버 스마트에디터에 Ctrl+V로 붙여넣을 수 있습니다.")
+    smart_text = re.sub(r"^#{1,6}\s*", "", article.get("body_markdown", ""), flags=re.MULTILINE)
+    smart_text = re.sub(r"\*\*(.*?)\*\*", r"\1", smart_text)
+    smart_text = re.sub(r"\[(.*?)\]\([^)]*\)", r"\1", smart_text)
+    st.code(smart_text, language=None)
+
+    if article.get("toc_included"):
+        st.info(f"목차 포함: {article.get('toc_reason', '')}")
+    else:
+        st.caption(f"목차 생략: {article.get('toc_reason', '')}")
+
+    if article.get("gap_coverage"):
+        st.markdown("### 콘텐츠 GAP 반영 현황")
+        for g in article.get("gap_coverage", []):
+            status = g.get("status", "")
+            icon = "✅" if status == "반영" else ("🟡" if status == "부분 반영" else "🔴")
+            st.write(f"{icon} {g.get('gap','')} — {status}")
+
     if article.get("faq"):
         st.markdown("### FAQ")
         for item in article["faq"]:
@@ -710,7 +769,7 @@ if article:
     st.markdown("### 태그")
     st.code(", ".join(article.get("tags", [])), language=None)
 
-    score, checks, count = seo_check(article, analysis)
+    score, checks, count, gaps, gap_label = seo_check(article, analysis)
     st.divider()
     st.subheader("5. SEO 최종 체크")
     st.metric("내부 품질 점수", f"{score}/100")
