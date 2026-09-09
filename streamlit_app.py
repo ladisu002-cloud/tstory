@@ -328,27 +328,90 @@ def fetch_benchmark(url):
     except Exception as e:
         return {"status": "failed", "url": url.strip(), "error": str(e)}
 
+# 세션에 API 설정을 보관합니다.
+# .env 값은 최초 기본값으로만 사용하고, 사용자가 저장한 값이 우선합니다.
+for _key, _env in [
+    ("gemini_key", "GEMINI_API_KEY"),
+    ("naver_id", "NAVER_CLIENT_ID"),
+    ("naver_secret", "NAVER_CLIENT_SECRET"),
+    ("own_blog", "NAVER_BLOG_ID"),
+]:
+    if _key not in st.session_state:
+        st.session_state[_key] = os.getenv(_env, "")
+
+if "credentials_saved" not in st.session_state:
+    st.session_state.credentials_saved = False
+if "connection_test" not in st.session_state:
+    st.session_state.connection_test = None
+
 with st.sidebar:
     st.header("⚙️ 설정")
-    gemini_key = st.text_input(
-        "Gemini API Key",
-        value=os.getenv("GEMINI_API_KEY", ""),
-        type="password",
-    )
-    naver_id = st.text_input(
-        "Naver Client ID",
-        value=os.getenv("NAVER_CLIENT_ID", ""),
-    )
-    naver_secret = st.text_input(
-        "Naver Client Secret",
-        value=os.getenv("NAVER_CLIENT_SECRET", ""),
-        type="password",
-    )
+    st.caption("API 키는 이 브라우저 세션에서만 사용합니다. GitHub에는 저장하지 않습니다.")
+
+    with st.form("api_settings_form", clear_on_submit=False):
+        st.text_input(
+            "Gemini API Key",
+            type="password",
+            key="gemini_key",
+        )
+        st.text_input(
+            "Naver Client ID",
+            key="naver_id",
+        )
+        st.text_input(
+            "Naver Client Secret",
+            type="password",
+            key="naver_secret",
+        )
+        save_settings = st.form_submit_button(
+            "💾 설정 저장",
+            type="primary",
+            use_container_width=True,
+        )
+
+    if save_settings:
+        st.session_state.credentials_saved = True
+        st.session_state.connection_test = None
+        st.success("설정이 현재 세션에 저장됐어요.")
+
+    if st.session_state.credentials_saved:
+        st.caption("🟢 저장된 API 설정을 사용 중입니다.")
+
+    if st.session_state.gemini_key and st.session_state.naver_id and st.session_state.naver_secret:
+        if st.button("🔌 네이버 API 연결 테스트", use_container_width=True):
+            results = {}
+            try:
+                test_blog = naver_search(
+                    "blog", "비짓재팬", st.session_state.naver_id, st.session_state.naver_secret,
+                    display=1, sort="sim"
+                )
+                results["블로그 검색 API"] = "정상" if "items" in test_blog else "응답 확인 필요"
+            except Exception as e:
+                results["블로그 검색 API"] = f"실패: {e}"
+
+            try:
+                test_trend = naver_trend(
+                    "비짓재팬", st.session_state.naver_id, st.session_state.naver_secret, days=7
+                )
+                results["검색어 트렌드 API"] = "정상" if "results" in test_trend else "응답 확인 필요"
+            except Exception as e:
+                results["검색어 트렌드 API"] = f"실패: {e}"
+
+            st.session_state.connection_test = results
+
+    if st.session_state.connection_test:
+        st.markdown("**연결 테스트 결과**")
+        for name, result in st.session_state.connection_test.items():
+            if result == "정상":
+                st.success(f"{name}: 정상", icon="✅")
+            else:
+                st.error(f"{name}: {result}", icon="❌")
+
     st.divider()
     st.subheader("내 블로그")
     own_blog = st.text_input(
         "네이버 블로그 주소 또는 ID",
-        value=os.getenv("NAVER_BLOG_ID", ""),
+        key="own_blog",
         placeholder="예: https://blog.naver.com/ladisu",
     )
     st.caption("기존 글이 있을 때만 관련 글 비교에 사용합니다.")
@@ -356,6 +419,12 @@ with st.sidebar:
     st.subheader("작성 기본값")
     tone = st.selectbox("말투", ["친근한 정보형", "담백한 정보형", "전문적인 정보형"])
     length = st.selectbox("목표 분량", ["약 2500자", "약 4000자", "약 6000자"], index=1)
+
+# 실제 API 호출에는 세션에 저장된 값을 사용합니다.
+gemini_key = st.session_state.gemini_key
+naver_id = st.session_state.naver_id
+naver_secret = st.session_state.naver_secret
+own_blog = st.session_state.own_blog
 
 if not gemini_key or not naver_id or not naver_secret:
     st.title("🔎 네이버 콘텐츠 기회 분석기")
