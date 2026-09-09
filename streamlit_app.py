@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 st.set_page_config(
-    page_title="네이버 콘텐츠 기회 분석기",
+    page_title="네이버 콘텐츠 기회 분석기 V1.3",
     page_icon="🔎",
     layout="wide",
 )
@@ -25,10 +25,47 @@ def clean_html(text):
     return re.sub(r"<[^>]+>", "", text or "").replace("&quot;", '"').replace("&amp;", "&").strip()
 
 def naver_headers(client_id, client_secret):
+    # Naver Open API는 Client ID/Secret을 반드시 HTTP 헤더로 전달합니다.
     return {
-        "X-Naver-Client-Id": client_id,
-        "X-Naver-Client-Secret": client_secret,
+        "X-Naver-Client-Id": (client_id or "").strip(),
+        "X-Naver-Client-Secret": (client_secret or "").strip(),
+        "Accept": "application/json",
     }
+
+def _secret_value(*paths):
+    """Streamlit Secrets에서 여러 형태의 키 경로를 안전하게 읽습니다.
+    지원 예: st.secrets['NAVER_CLIENT_ID'], st.secrets['naver']['client_id']
+    """
+    try:
+        for path in paths:
+            cur = st.secrets
+            ok = True
+            for part in path.split("."):
+                if part not in cur:
+                    ok = False
+                    break
+                cur = cur[part]
+            if ok and cur is not None and str(cur).strip():
+                return str(cur).strip()
+    except Exception:
+        pass
+    return ""
+
+def _initial_credential(env_name, *secret_paths):
+    # 우선순위: Streamlit Secrets → 환경변수
+    return _secret_value(*secret_paths) or os.getenv(env_name, "").strip()
+
+def _raise_naver_error(r, api_name):
+    if r.ok:
+        return
+    try:
+        body = r.json()
+    except Exception:
+        body = r.text[:500]
+    raise requests.HTTPError(
+        f"{api_name} 실패: HTTP {r.status_code} · {body}",
+        response=r,
+    )
 
 def naver_search(api, query, client_id, client_secret, display=10, sort="sim"):
     url = f"https://openapi.naver.com/v1/search/{api}.json"
@@ -38,7 +75,7 @@ def naver_search(api, query, client_id, client_secret, display=10, sort="sim"):
         params={"query": query, "display": display, "sort": sort},
         timeout=15,
     )
-    r.raise_for_status()
+    _raise_naver_error(r, f"네이버 {api} 검색 API")
     return r.json()
 
 def naver_trend(keyword, client_id, client_secret, days=30):
@@ -57,7 +94,7 @@ def naver_trend(keyword, client_id, client_secret, days=30):
         json=payload,
         timeout=15,
     )
-    r.raise_for_status()
+    _raise_naver_error(r, "네이버 검색어 트렌드 API")
     return r.json()
 
 def naver_shopping_trend(keyword, category_code, client_id, client_secret, days=30):
@@ -79,7 +116,7 @@ def naver_shopping_trend(keyword, category_code, client_id, client_secret, days=
         json=payload,
         timeout=15,
     )
-    r.raise_for_status()
+    _raise_naver_error(r, "네이버 쇼핑인사이트 API")
     return r.json()
 
 def extract_blog_id(url_or_id):
@@ -330,14 +367,14 @@ def fetch_benchmark(url):
 
 # 세션에 API 설정을 보관합니다.
 # .env 값은 최초 기본값으로만 사용하고, 사용자가 저장한 값이 우선합니다.
-for _key, _env in [
-    ("gemini_key", "GEMINI_API_KEY"),
-    ("naver_id", "NAVER_CLIENT_ID"),
-    ("naver_secret", "NAVER_CLIENT_SECRET"),
-    ("own_blog", "NAVER_BLOG_ID"),
+for _key, _env, _secret_paths in [
+    ("gemini_key", "GEMINI_API_KEY", ("GEMINI_API_KEY", "gemini.api_key")),
+    ("naver_id", "NAVER_CLIENT_ID", ("NAVER_CLIENT_ID", "naver.client_id")),
+    ("naver_secret", "NAVER_CLIENT_SECRET", ("NAVER_CLIENT_SECRET", "naver.client_secret")),
+    ("own_blog", "NAVER_BLOG_ID", ("NAVER_BLOG_ID", "naver.blog_id")),
 ]:
-    if _key not in st.session_state:
-        st.session_state[_key] = os.getenv(_env, "")
+    if _key not in st.session_state or not st.session_state[_key]:
+        st.session_state[_key] = _initial_credential(_env, *_secret_paths)
 
 if "credentials_saved" not in st.session_state:
     st.session_state.credentials_saved = False
@@ -370,12 +407,17 @@ with st.sidebar:
         )
 
     if save_settings:
+        # 저장 버튼을 누른 순간 현재 입력값을 그대로 세션에 확정합니다.
         st.session_state.credentials_saved = True
         st.session_state.connection_test = None
         st.success("설정이 현재 세션에 저장됐어요.")
 
     if st.session_state.credentials_saved:
         st.caption("🟢 저장된 API 설정을 사용 중입니다.")
+
+    if st.session_state.naver_id and st.session_state.naver_secret:
+        naver_source = "Streamlit Secrets/환경변수에서 불러온 기본값" if not st.session_state.credentials_saved else "설정 화면에서 저장한 현재 세션값"
+        st.caption(f"네이버 인증값 출처: {naver_source}")
 
     if st.session_state.gemini_key and st.session_state.naver_id and st.session_state.naver_secret:
         if st.button("🔌 네이버 API 연결 테스트", use_container_width=True):
@@ -427,7 +469,7 @@ naver_secret = st.session_state.naver_secret
 own_blog = st.session_state.own_blog
 
 if not gemini_key or not naver_id or not naver_secret:
-    st.title("🔎 네이버 콘텐츠 기회 분석기")
+    st.title("🔎 네이버 콘텐츠 기회 분석기 V1.3")
     st.info("왼쪽 사이드바에 Gemini API Key와 Naver Client ID / Secret을 입력하면 시작할 수 있어요.")
     st.markdown("""
 ### 이 버전에서 하는 일
