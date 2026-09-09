@@ -329,13 +329,18 @@ def write_with_ai(client, analysis_payload, writing_options):
 4) 과도한 키워드 반복 금지
 5) 확인되지 않은 숫자, 효능, 경험, 통계를 지어내지 않기
 6) 사용자가 직접 경험했다고 주어지지 않은 내용을 1인칭 체험처럼 쓰지 않기
-7) 모바일에서 읽기 쉽게 짧은 문단과 명확한 소제목 사용
-8) 한국어 문체는 친근한 존댓말(~해요, ~랍니다)을 기본으로 하기
-9) 본문은 반드시 자연스러운 서론으로 시작하세요. 첫 번째 번호형 소제목이나 H2/H3보다 서론이 먼저 와야 합니다.
-10) 홈판용 글이라도 서론을 생략하지 마세요. 홈판에서는 첫 2~4개 문단의 공감·문제제기·궁금증 유발이 중요합니다.
-11) 목차는 모든 글에 강제로 넣지 마세요. 카테고리, 검색의도, 글의 예상 길이를 보고 판단하세요. 정보형/여행정보/긴 핫이슈·쇼핑정보 글은 목차를 권장하고, 맛집/일상/짧은 리뷰는 생략할 수 있습니다.
-12) 목차를 넣는다면 반드시 '서론 → 목차 → 본론' 순서로 배치하세요.
-13) 분석에서 제시된 콘텐츠 GAP이 있다면 본문에 실제로 반영하고, 각 GAP의 반영 여부를 gap_coverage에 기록하세요.
+7) 네이버 모바일 화면을 최우선으로 고려해 짧은 문단과 명확한 소제목을 사용하기
+8) 모바일 가독성을 위해 한 문단은 기본 1~2문장으로 구성하고, 3문장을 넘기지 않기
+9) 문장과 문장 사이에는 필요하면 빈 줄을 넣어 호흡을 만들고, 핵심 문장은 한 문장만 단독 문단으로 배치하기
+10) 문단과 문단 사이에는 반드시 빈 줄 1줄을 두고, 소제목 위·아래에도 빈 줄을 두기
+11) 한 문장이 지나치게 길어지지 않도록 40~60자 안팎을 우선하고, 긴 문장은 자연스럽게 2문장으로 나누기
+12) 모바일에서 스크롤하며 읽어도 핵심이 바로 보이도록 결론·수치·주의사항·체크포인트는 별도 짧은 문단으로 강조하기
+13) 한국어 문체는 친근한 존댓말(~해요, ~랍니다)을 기본으로 하기
+14) 본문은 반드시 자연스러운 서론으로 시작하세요. 첫 번째 번호형 소제목이나 H2/H3보다 서론이 먼저 와야 합니다.
+15) 홈판용 글이라도 서론을 생략하지 마세요. 홈판에서는 첫 2~4개 문단의 공감·문제제기·궁금증 유발이 중요합니다.
+16) 목차는 모든 글에 강제로 넣지 마세요. 카테고리, 검색의도, 글의 예상 길이를 보고 판단하세요. 정보형/여행정보/긴 핫이슈·쇼핑정보 글은 목차를 권장하고, 맛집/일상/짧은 리뷰는 생략할 수 있습니다.
+17) 목차를 넣는다면 반드시 '서론 → 목차 → 본론' 순서로 배치하세요.
+18) 분석에서 제시된 콘텐츠 GAP이 있다면 본문에 실제로 반영하고, 각 GAP의 반영 여부를 gap_coverage에 기록하세요.
 
 작성 조건:
 - 카테고리: {writing_options["category"]} (사용자 블로그 실제 카테고리)
@@ -349,6 +354,14 @@ def write_with_ai(client, analysis_payload, writing_options):
 
 body_markdown에는 글 제목을 반복하지 말고 H2/H3 마크다운을 사용하세요.
 body_markdown의 시작은 번호형 H2/H3가 아니라 2~4개의 서론 문단이어야 합니다.
+[네이버 모바일 가독성 필수 규칙]
+- 문단 사이에는 빈 줄 1줄을 넣으세요.
+- 한 문단은 1~2문장, 최대 3문장을 넘기지 마세요.
+- 긴 문장은 짧게 나누고, 한 문단에 하나의 핵심만 담으세요.
+- 중요한 한 문장은 단독 문단으로 배치할 수 있습니다.
+- H2/H3 소제목 앞뒤에는 빈 줄을 넣으세요.
+- 모바일에서 한눈에 읽히도록 문단을 촘촘하게 붙이지 마세요.
+- 쉼표를 과도하게 사용해 한 문장을 길게 이어 쓰지 마세요.
 목차를 넣는 경우 서론 다음에 '### 목차'를 두고, 그 다음부터 본론 소제목을 시작하세요.
 toc_included에는 목차를 실제로 넣었는지 true/false를 기록하고, toc_reason에는 넣거나 생략한 이유를 짧게 적으세요.
 content_gaps가 있다면 gap_coverage에 각 GAP을 그대로 적고 status는 '반영' 또는 '부분 반영' 또는 '미반영' 중 하나로만 기록하세요. evidence에는 본문에서 어떻게 반영했는지 적으세요.
@@ -527,7 +540,7 @@ naver_secret = st.session_state.naver_secret
 own_blog = st.session_state.own_blog
 
 if not gemini_key or not naver_id or not naver_secret:
-    st.title("🔎 네이버 콘텐츠 기회 분석기 V1.5")
+    st.title("🔎 네이버 콘텐츠 기회 분석기 V1.8")
     st.info("왼쪽 사이드바에 Gemini API Key와 Naver Client ID / Secret을 입력하면 시작할 수 있어요.")
     st.markdown("""
 ### 이 버전에서 하는 일
@@ -737,10 +750,28 @@ if article:
     st.markdown(article.get("body_markdown", ""))
 
     st.markdown("### 네이버 스마트에디터용 본문")
-    st.caption("아래 내용은 마크다운 기호를 제거한 순수 본문입니다. 복사 아이콘으로 복사한 뒤 네이버 스마트에디터에 Ctrl+V로 붙여넣을 수 있습니다.")
+    st.caption("네이버 모바일 기준으로 문단·문장 호흡을 짧게 정리한 본문입니다. 복사 아이콘으로 복사한 뒤 네이버 스마트에디터에 Ctrl+V로 붙여넣을 수 있습니다.")
     smart_text = re.sub(r"^#{1,6}\s*", "", article.get("body_markdown", ""), flags=re.MULTILINE)
     smart_text = re.sub(r"\*\*(.*?)\*\*", r"\1", smart_text)
     smart_text = re.sub(r"\[(.*?)\]\([^)]*\)", r"\1", smart_text)
+
+    # FAQ도 스마트에디터 복사 영역에 함께 포함합니다.
+    faq_items = article.get("faq", []) or []
+    if faq_items:
+        faq_lines = ["", "FAQ", ""]
+        for item in faq_items:
+            q = str(item.get("question", "")).strip()
+            a = str(item.get("answer", "")).strip()
+            if q:
+                faq_lines.append(q)
+            if a:
+                faq_lines.append(a)
+            faq_lines.append("")
+        smart_text = smart_text.rstrip() + "\n" + "\n".join(faq_lines).rstrip() + "\n"
+
+    # 모바일 가독성용 최소 정리: 과도한 연속 빈 줄만 정리합니다.
+    smart_text = re.sub(r"\n{3,}", "\n\n", smart_text).strip() + "\n"
+
     st.code(smart_text, language=None)
 
     if article.get("toc_included"):
