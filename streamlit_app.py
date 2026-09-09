@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 st.set_page_config(
-    page_title="네이버 콘텐츠 기회 분석기 V1.7",
+    page_title="네이버 콘텐츠 기회 분석기 V2.1",
     page_icon="🔎",
     layout="wide",
 )
@@ -147,16 +147,53 @@ def extract_blog_id(url_or_id):
     return path.split("/")[0] if path else ""
 
 def own_blog_matches(blog_items, blog_id):
+    """일반 키워드 검색 결과에서 내 블로그 글만 추립니다."""
     if not blog_id:
         return []
-    key = blog_id.lower()
+    key = blog_id.lower().strip()
     matches = []
-    for item in blog_items:
+    seen = set()
+    for item in blog_items or []:
         bloggerlink = (item.get("bloggerlink") or "").lower()
         link = (item.get("link") or "").lower()
         if key in bloggerlink or f"blog.naver.com/{key}" in link:
-            matches.append(item)
+            unique = item.get("link") or item.get("title")
+            if unique not in seen:
+                seen.add(unique)
+                matches.append(item)
     return matches
+
+def search_own_blog_posts(keyword, blog_id, client_id, client_secret):
+    """내 블로그 관련글을 일반 검색 결과에만 의존하지 않고 여러 검색식으로 보완합니다."""
+    if not blog_id:
+        return [], "내 블로그 주소/ID가 없어 기존 글 검색을 건너뛰었습니다."
+
+    queries = [
+        keyword,
+        f"{keyword} {blog_id}",
+        f"site:blog.naver.com/{blog_id} {keyword}",
+    ]
+    all_items = []
+    seen = set()
+    for q in queries:
+        try:
+            result = naver_search("blog", q, client_id, client_secret, display=100, sort="sim")
+            for item in result.get("items", []):
+                link = item.get("link") or ""
+                title = item.get("title") or ""
+                key = link or title
+                if key not in seen:
+                    seen.add(key)
+                    all_items.append(item)
+        except Exception:
+            continue
+
+    matches = own_blog_matches(all_items, blog_id)
+    if matches:
+        note = f"내 블로그 관련글 {len(matches)}개를 여러 검색식으로 확인했습니다."
+    else:
+        note = "현재 네이버 검색 API에서 내 블로그 관련글 후보를 찾지 못했습니다. 검색 결과에 노출되지 않는 오래된 글까지 존재하지 않는다고 단정하지 않습니다."
+    return matches, note
 
 def trend_summary(trend_data):
     data = []
@@ -212,12 +249,38 @@ ANALYSIS_SCHEMA = {
         "recommended_strategy": {"type": "STRING"},
         "strategy_reason": {"type": "STRING"},
         "recommended_outline": {"type": "ARRAY", "items": {"type": "STRING"}},
+        "existing_content_asset_summary": {"type": "STRING"},
+        "existing_content_relevance": {"type": "STRING"},
+        "existing_content_strengths": {"type": "ARRAY", "items": {"type": "STRING"}},
+        "existing_content_missing_or_extendable": {"type": "ARRAY", "items": {"type": "STRING"}},
+        "current_time_extension_points": {"type": "ARRAY", "items": {"type": "STRING"}},
+        "new_content_opportunities": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "topic": {"type": "STRING"},
+                    "search_intent": {"type": "STRING"},
+                    "keyword": {"type": "STRING"},
+                    "reason": {"type": "STRING"},
+                    "source_post": {"type": "STRING"}
+                },
+                "required": ["topic", "search_intent", "keyword", "reason", "source_post"]
+            }
+        },
+        "recommended_new_keywords": {"type": "ARRAY", "items": {"type": "STRING"}},
+        "cannibalization_note": {"type": "STRING"},
+        "recommended_source_post": {"type": "STRING"}
     },
     "required": [
         "search_intent", "competition", "opportunity", "trend_interpretation",
         "related_keywords", "long_tail_keywords", "title_patterns",
         "content_gaps", "home_feed_angle", "recommended_strategy",
-        "strategy_reason", "recommended_outline",
+        "strategy_reason", "recommended_outline", "existing_content_asset_summary",
+        "existing_content_relevance", "existing_content_strengths",
+        "existing_content_missing_or_extendable", "current_time_extension_points",
+        "new_content_opportunities", "recommended_new_keywords",
+        "cannibalization_note", "recommended_source_post"
     ],
 }
 
@@ -279,43 +342,77 @@ ARTICLE_SCHEMA = {
     ],
 }
 
-def gemini_json(client, prompt, schema, max_tokens=8000):
-    resp = client.models.generate_content(
-        model=MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            max_output_tokens=max_tokens,
-            response_mime_type="application/json",
-            response_schema=schema,
-        ),
-    )
-    text = (resp.text or "").strip()
-    return json.loads(text)
+def gemini_json(client, prompt, schema, max_tokens=8000, retries=3):
+    """Gemini 일시적 503/UNAVAILABLE에 대비해 자동 재시도합니다."""
+    import time
+    last_error = None
+    for attempt in range(retries):
+        try:
+            resp = client.models.generate_content(
+                model=MODEL,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    max_output_tokens=max_tokens,
+                    response_mime_type="application/json",
+                    response_schema=schema,
+                ),
+            )
+            text = (resp.text or "").strip()
+            return json.loads(text)
+        except Exception as e:
+            last_error = e
+            message = str(e)
+            if "503" not in message and "UNAVAILABLE" not in message and "high demand" not in message:
+                raise
+            if attempt < retries - 1:
+                time.sleep(2 ** attempt * 2)
+    raise RuntimeError(f"Gemini가 일시적으로 응답하지 않습니다. 잠시 후 다시 시도해 주세요. 원본 오류: {last_error}")
 
 def analyze_with_ai(client, payload):
     prompt = f"""
 당신은 네이버 블로그 콘텐츠 전략가입니다.
-목표는 네이버 검색 노출과 네이버 홈 피드 클릭 가능성을 함께 고려해
-'이 키워드로 지금 어떤 글을 만들어야 하는가'를 판단하는 것입니다.
+핵심 목표는 '현재 키워드'와 '사용자가 과거에 만든 콘텐츠 자산'을 연결해
+지금 시점에 어떤 콘텐츠 기회를 만들 수 있는지 판단하는 것입니다.
 
-중요한 원칙:
-- 네이버 크리에이터 어드바이저의 순위나 검색량을 추정해서 만들지 마세요.
-- 제공된 데이터만 근거로 판단하세요.
-- 검색어 트렌드는 절대 검색량이 아니라 상대적인 관심도 추이입니다.
-- 네이버 검색 API의 블로그 결과만으로 경쟁 글의 전체 본문 구조를 안다고 주장하지 마세요.
-- 관련 키워드는 검색 결과의 제목/설명과 일반적인 검색 의도를 종합해 제안하세요.
-- 기존 글이 없으면 신규 작성 전략을 추천하세요.
-- 기존 글이 있으면 UPDATE 또는 NEW_SEPARATE 중 하나를 판단하세요.
-- 기존 글과 검색 의도가 거의 같고 최신성 보강이 핵심이면 UPDATE.
-- 검색 의도가 다르거나 별도의 문제 해결형 주제가 더 적합하면 NEW_SEPARATE.
-- 기존 글 정보가 없으면 무리해서 업데이트를 추천하지 마세요.
+가장 중요한 관점:
+- 내 블로그 주소/ID는 단순히 검색 결과에서 내 글을 찾기 위한 값이 아닙니다.
+- 기존 글은 '콘텐츠 자산'입니다. 기존 글의 주제, 경험, 목록, 관찰, 정보, 당시의 한계를 분석하고
+  현재 키워드와 연결해 새로운 글을 만들 수 있는지 판단하세요.
+- 특정 기존글 URL이 제공되면 그 글을 최우선 원본 자산으로 분석하세요.
+- 자동 검색으로 기존 글 후보를 찾았다면 후보도 자산으로 활용하세요.
+- 자동 검색에서 찾지 못했다고 해서 기존 글이 없다고 단정하지 마세요.
+
+전략 판단은 반드시 다음 중 하나로 분류하세요:
+1. UPDATE_EXISTING: 기존 글과 검색 의도가 거의 같고 최신 정보 보강이 핵심일 때
+2. NEW_DERIVED: 기존 글의 경험/주제를 활용하되 현재 검색 의도와 새로운 정보 가치가 달라 별도 신규 글로 만들 때
+3. NEW_UNRELATED: 기존 콘텐츠 자산과 연결할 만한 실질적 가치가 없어 완전히 새 글로 만들 때
+4. NO_OPPORTUNITY: 제공된 데이터만으로 현재 키워드의 콘텐츠 기회가 낮다고 판단될 때
+
+특히 다음과 같은 '시간이 지나서 새로 생긴 가치'를 적극적으로 검토하세요:
+- 실제 사용/섭취 후 평가
+- 다시 구매할 것 vs 사지 않을 것
+- 재방문/재구매 의향
+- 몇 달 사용 후 장단점
+- 처음 작성할 당시 알 수 없었던 문제점
+- 현재 시점의 추천 기준
+- 다음에 다시 간다면 무엇을 고를지
+- 당시 목록형 정보에서 현재의 비교/후기/의사결정형 정보로 확장할 수 있는지
+단, 입력 데이터에 없는 실제 경험을 사실처럼 만들어내지 마세요. '추가로 확인하면 좋은 경험 포인트'와 '이미 제공된 경험'을 구분하세요.
+
+추가 원칙:
+- 네이버 크리에이터 어드바이저의 순위나 절대 검색량을 추정하지 마세요.
+- 검색어 트렌드는 상대 관심도 추이입니다.
+- 검색 API 블로그 결과만으로 경쟁 글 전체 본문을 안다고 주장하지 마세요.
+- 콘텐츠 GAP은 검색 결과와 기존 자산을 비교해 도출하세요.
+- 새 글을 추천할 때는 기존 글과의 자기잠식(검색의도 중복) 가능성도 설명하세요.
+- 추천 신규 주제는 최소 3개 이상 제시하되, 기존 자산에서 실제로 확장 가능한 것과 완전 신규 주제를 구분하세요.
 
 [입력]
 {json.dumps(payload, ensure_ascii=False, indent=2)}
 
 JSON으로만 답하세요.
 """
-    return gemini_json(client, prompt, ANALYSIS_SCHEMA, 6000)
+    return gemini_json(client, prompt, ANALYSIS_SCHEMA, 7500)
 
 def write_with_ai(client, analysis_payload, writing_options):
     prompt = f"""
@@ -348,6 +445,15 @@ def write_with_ai(client, analysis_payload, writing_options):
 - 목표 분량: {writing_options["length"]}
 - 메인 키워드: {analysis_payload["keyword"]}
 - 추천 전략: {analysis_payload["recommended_strategy"]}
+- 기존 콘텐츠 자산: {analysis_payload.get("recommended_source_post", "없음")}
+- 새로운 글의 핵심 각도: {analysis_payload.get("strategy_reason", "")}
+
+전략별 작성 규칙:
+- UPDATE_EXISTING이면 기존 글의 핵심 정보를 유지하면서 현재 시점에 필요한 내용을 보강하세요.
+- NEW_DERIVED이면 기존 글을 단순 복붙/요약/재작성하지 말고, 기존 글에서 파생된 새로운 검색 의도와 현재 시점의 가치에 집중하세요.
+  예: 과거의 '무엇을 샀는지' 글이라면 현재는 '직접 써보니 다시 살 것/안 살 것', '몇 달 후 평가', '다음에 다시 사올 것'처럼 의사결정형 콘텐츠로 확장할 수 있습니다.
+- NEW_UNRELATED이면 기존 자산을 억지로 연결하지 말고 완전히 새 주제로 작성하세요.
+- 입력에 없는 개인 경험은 만들어내지 말고, 필요한 경우 일반 정보형 표현으로 전환하세요.
 
 분석 데이터:
 {json.dumps(analysis_payload, ensure_ascii=False, indent=2)}
@@ -406,7 +512,7 @@ def seo_check(article, analysis):
     score = round(sum(checks.values()) / len(checks) * 100)
     return score, checks, count, gaps, gap_label
 
-def build_analysis_payload(keyword, category, trend, blog, news, web, images, own_posts, shopping, benchmark):
+def build_analysis_payload(keyword, category, trend, blog, news, web, images, own_posts, shopping, benchmark, own_search_note="", specific_post=None, blog_id=""):
     return {
         "keyword": keyword,
         "category": category,
@@ -415,10 +521,13 @@ def build_analysis_payload(keyword, category, trend, blog, news, web, images, ow
         "news_results": compact_results(news.get("items", []), ["title", "description", "originallink", "pubDate"]),
         "web_results": compact_results(web.get("items", []), ["title", "description", "link"]),
         "image_results": compact_results(images.get("items", []), ["title", "link", "thumbnail"]),
+        "own_blog_id": blog_id,
         "own_existing_posts": compact_results(own_posts, ["title", "description", "link", "postdate"]),
+        "specific_existing_post": specific_post or {"status": "not_provided"},
+        "own_search_note": own_search_note,
         "shopping_trend": shopping,
         "benchmark": benchmark,
-        "recommended_strategy": "NEW" if not own_posts else "PENDING",
+        "recommended_strategy": "PENDING",
     }
 
 def fetch_benchmark(url):
@@ -435,6 +544,28 @@ def fetch_benchmark(url):
         return {"status": "ok", "url": url.strip(), "text": text[:7000]}
     except Exception as e:
         return {"status": "failed", "url": url.strip(), "error": str(e)}
+
+
+def fetch_naver_post(url):
+    """사용자가 지정한 기존 네이버 글을 콘텐츠 자산으로 읽습니다."""
+    url = (url or "").strip()
+    if not url:
+        return {"status": "not_provided"}
+    try:
+        r = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0 (compatible; ContentAnalyzer/2.1)"})
+        r.raise_for_status()
+        raw = r.text
+        # 네이버 블로그의 본문이 별도 iframe/JSON에 들어가는 경우가 있어
+        # 우선 전체 HTML에서 사람이 읽을 수 있는 텍스트를 최대한 추출합니다.
+        text = re.sub(r"<script[\s\S]*?</script>", " ", raw, flags=re.I)
+        text = re.sub(r"<style[\s\S]*?</style>", " ", text, flags=re.I)
+        text = clean_html(text)
+        text = re.sub(r"\s+", " ", text).strip()
+        title_match = re.search(r"<title[^>]*>(.*?)</title>", raw, flags=re.I|re.S)
+        title = clean_html(title_match.group(1)) if title_match else ""
+        return {"status": "ok", "url": url, "title": title, "text": text[:12000]}
+    except Exception as e:
+        return {"status": "failed", "url": url, "error": str(e)}
 
 # 세션에 API 설정을 보관합니다.
 # .env 값은 최초 기본값으로만 사용하고, 사용자가 저장한 값이 우선합니다.
@@ -527,7 +658,12 @@ with st.sidebar:
         key="own_blog",
         placeholder="예: https://blog.naver.com/ladisu",
     )
-    st.caption("기존 글이 있을 때만 관련 글 비교에 사용합니다.")
+    st.caption("내 블로그는 기존 글을 '콘텐츠 자산'으로 분석해 현재 키워드와 연결할 기회를 찾는 데 사용합니다.")
+    specific_existing_url = st.text_input(
+        "특정 기존글 URL(선택)",
+        placeholder="예: https://blog.naver.com/ladisu/223000000000",
+        help="정확히 분석하고 싶은 과거 글이 있다면 입력하세요. 입력하면 이 글을 최우선 원본 자산으로 분석합니다.",
+    )
     st.divider()
     st.subheader("작성 기본값")
     tone = st.selectbox("말투", ["친근한 정보형", "담백한 정보형", "전문적인 정보형"])
@@ -540,7 +676,7 @@ naver_secret = st.session_state.naver_secret
 own_blog = st.session_state.own_blog
 
 if not gemini_key or not naver_id or not naver_secret:
-    st.title("🔎 네이버 콘텐츠 기회 분석기 V1.8")
+    st.title("🔎 네이버 콘텐츠 기회 분석기 V2.1")
     st.info("왼쪽 사이드바에 Gemini API Key와 Naver Client ID / Secret을 입력하면 시작할 수 있어요.")
     st.markdown("""
 ### 이 버전에서 하는 일
@@ -549,7 +685,7 @@ if not gemini_key or not naver_id or not naver_secret:
 3. 블로그·뉴스·웹·이미지 검색 분석
 4. 필요하면 쇼핑인사이트 분석
 5. 내 블로그에 관련 글이 있는지 확인
-6. 신규 작성 / 기존 글 업데이트 / 별도 신규 글을 AI가 판단
+6. 내 기존 콘텐츠를 '자산'으로 분석해 업데이트 / 파생 신규 / 완전 신규 전략을 AI가 판단
 7. 검색용 제목 + 홈판용 제목 + 본문 + 이미지 계획까지 작성
 """)
     st.stop()
@@ -612,9 +748,13 @@ if analyze_clicked:
             st.write("⑤ 이미지 검색")
             images = naver_search("image", keyword, naver_id, naver_secret, display=10, sort="sim")
 
-            st.write("⑥ 내 기존 글 확인")
+            st.write("⑥ 내 기존 콘텐츠 자산 수집")
             blog_id = extract_blog_id(own_blog)
-            own_posts = own_blog_matches(blog.get("items", []), blog_id)
+            own_posts, own_search_note = search_own_blog_posts(
+                keyword, blog_id, naver_id, naver_secret
+            )
+            # 키워드 검색 결과에 안 잡혀도 자산으로 직접 지정할 수 있도록 지원
+            specific_post = fetch_naver_post(specific_existing_url) if specific_existing_url.strip() else {"status": "not_provided"}
 
             shopping = None
             if commercial and shopping_category.strip():
@@ -626,7 +766,8 @@ if analyze_clicked:
             benchmark = fetch_benchmark(benchmark_url)
             payload = build_analysis_payload(
                 keyword, category, trend, blog, news, web, images,
-                own_posts, shopping, benchmark
+                own_posts, shopping, benchmark, own_search_note,
+                specific_post=specific_post, blog_id=blog_id
             )
 
             st.write("⑧ AI 콘텐츠 전략 분석")
@@ -651,19 +792,41 @@ if analysis:
     opportunity = analysis.get("opportunity", "확인 필요")
     strategy = analysis.get("recommended_strategy", "NEW")
 
-    m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric("관심도 추이", direction)
-    m2.metric("콘텐츠 기회", opportunity)
-    m3.metric("검색의도", analysis.get("search_intent", "-"))
-    m4.metric("기존 관련글", f"{own_count}개")
-    m5.metric("추천 전략", strategy)
+    # 모바일/좁은 화면에서도 한눈에 읽히도록 큰 st.metric 대신 컴팩트 카드 사용
+    st.markdown("""
+    <style>
+    .summary-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin:8px 0 14px;}
+    .summary-card{border:1px solid #e6e6e6;border-radius:10px;padding:10px 11px;background:#fff;min-height:72px;}
+    .summary-label{font-size:11px;color:#777;margin-bottom:5px;font-weight:600;}
+    .summary-value{font-size:15px;line-height:1.35;font-weight:700;word-break:keep-all;}
+    @media(max-width:900px){.summary-grid{grid-template-columns:repeat(2,minmax(0,1fr));}}
+    @media(max-width:520px){.summary-grid{grid-template-columns:1fr;}}
+    </style>
+    """, unsafe_allow_html=True)
+    def _card(label, value):
+        value = str(value or "-")
+        if len(value) > 34:
+            value = value[:34] + "…"
+        return f'<div class="summary-card"><div class="summary-label">{label}</div><div class="summary-value">{value}</div></div>'
+    st.markdown(
+        '<div class="summary-grid">' +
+        _card("관심도 추이", direction) +
+        _card("콘텐츠 기회", opportunity) +
+        _card("검색 의도", analysis.get("search_intent", "-")) +
+        _card("내 기존 관련글", f"{own_count}개") +
+        _card("추천 전략", strategy) +
+        '</div>',
+        unsafe_allow_html=True,
+    )
 
-    if strategy == "UPDATE":
-        st.success("🔄 기존 글 업데이트를 우선 추천합니다.")
-    elif strategy == "NEW_SEPARATE":
-        st.info("🆕 기존 글과 검색 의도가 달라 별도 신규 글을 추천합니다.")
-    else:
-        st.info("🆕 관련 기존 글이 없거나 신규 콘텐츠 가치가 높아 신규 작성을 추천합니다.")
+    strategy_labels = {
+        "UPDATE_EXISTING": "🔄 기존 글 업데이트",
+        "NEW_DERIVED": "🆕 기존 글 기반 신규 글",
+        "NEW_UNRELATED": "🆕 완전 신규 글",
+        "NO_OPPORTUNITY": "⏸ 현재 작성 보류",
+    }
+    st.info(f"추천 콘텐츠 전략: **{strategy_labels.get(strategy, strategy)}**")
+    st.write(analysis.get("strategy_reason", ""))
 
     tabs = st.tabs(["🔑 키워드", "📊 경쟁 콘텐츠", "🧩 콘텐츠 GAP", "📚 내 기존글", "🏠 홈판 전략"])
 
@@ -689,13 +852,40 @@ if analysis:
             st.write(f"🧩 {x}")
 
     with tabs[3]:
-        if not analysis.get("own_existing_posts"):
-            st.info("현재 검색 결과에서 내 블로그의 관련 글을 찾지 못했습니다.")
-        else:
+        st.markdown("### 기존 콘텐츠 자산 분석")
+        if analysis.get("own_search_note"):
+            st.caption("🔎 " + analysis.get("own_search_note"))
+        specific = analysis.get("specific_existing_post", {}) or {}
+        if specific.get("status") == "ok":
+            st.success("🎯 지정한 기존글을 최우선 콘텐츠 자산으로 분석했습니다.")
+            st.markdown(f"**{specific.get('title') or specific.get('url','')}**")
+            st.caption(specific.get("url", ""))
+        elif specific.get("status") == "failed":
+            st.warning("지정한 기존글을 직접 읽지 못했습니다. 자동 발견 후보와 입력된 정보만으로 분석했습니다.")
+        st.markdown("### 기존 글에서 이미 가진 자산")
+        st.write(analysis.get("existing_content_asset_summary", "-"))
+        st.markdown("### 현재 키워드와의 연결성")
+        st.write(analysis.get("existing_content_relevance", "-"))
+        st.markdown("### 기존 글의 강점")
+        for x in analysis.get("existing_content_strengths", []):
+            st.write(f"• {x}")
+        st.markdown("### 지금 새로 확장할 수 있는 포인트")
+        for x in analysis.get("current_time_extension_points", []):
+            st.write(f"🆕 {x}")
+        st.markdown("### 추천 신규 콘텐츠 기회")
+        for x in analysis.get("new_content_opportunities", []):
+            st.write(f"**{x.get('topic','')}** · {x.get('keyword','')}")
+            st.caption(f"검색의도: {x.get('search_intent','')} · {x.get('reason','')}")
+        st.markdown("### 자기잠식 주의")
+        st.write(analysis.get("cannibalization_note", "-"))
+        if analysis.get("own_existing_posts"):
+            st.markdown("### 자동 발견된 관련 후보")
             for post in analysis["own_existing_posts"]:
                 st.markdown(f"**{post.get('title','')}**")
                 st.caption(f"{post.get('postdate','')} · {post.get('link','')}")
                 st.write(post.get("description", ""))
+        else:
+            st.caption("자동 검색에서 후보가 없더라도 기존 글이 없다는 뜻은 아닙니다. 정확한 글을 분석하려면 '특정 기존글 URL'을 입력할 수 있습니다.")
 
     with tabs[4]:
         st.markdown("### 홈판 콘텐츠 각도")
