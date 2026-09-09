@@ -13,13 +13,13 @@ from dotenv import load_dotenv
 load_dotenv()
 
 st.set_page_config(
-    page_title="네이버 콘텐츠 기회 분석기 V1.4",
+    page_title="네이버 콘텐츠 기회 분석기 V1.5",
     page_icon="🔎",
     layout="wide",
 )
 
 CATEGORIES = ["건강", "생활정보", "여행", "육아", "제품리뷰", "정부지원", "기타"]
-MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 
 def clean_html(text):
     return re.sub(r"<[^>]+>", "", text or "").replace("&quot;", '"').replace("&amp;", "&").strip()
@@ -487,7 +487,7 @@ naver_secret = st.session_state.naver_secret
 own_blog = st.session_state.own_blog
 
 if not gemini_key or not naver_id or not naver_secret:
-    st.title("🔎 네이버 콘텐츠 기회 분석기 V1.4")
+    st.title("🔎 네이버 콘텐츠 기회 분석기 V1.5")
     st.info("왼쪽 사이드바에 Gemini API Key와 Naver Client ID / Secret을 입력하면 시작할 수 있어요.")
     st.markdown("""
 ### 이 버전에서 하는 일
