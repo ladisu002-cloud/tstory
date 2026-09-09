@@ -1,32 +1,32 @@
-# 네이버 콘텐츠 기회 분석기 V1.3
+# 네이버 콘텐츠 기회 분석기 V1.4
 
-V1.3에서는 Streamlit Secrets를 실제로 읽도록 수정했습니다.
+NAVER API HUB + Gemini 기반의 네이버 콘텐츠 기회 분석기입니다.
+
+## V1.4 주요 변경
+- 기존 `openapi.naver.com` 방식 제거
+- NAVER API HUB 검색 API 사용
+- NAVER API HUB 검색어 트렌드 사용
+- NAVER API HUB 쇼핑인사이트 사용
+- API HUB 인증 헤더 사용
+  - `X-NCP-APIGW-API-KEY-ID`
+  - `X-NCP-APIGW-API-KEY`
+- 블로그/뉴스/웹문서/이미지 검색 지원
+- Streamlit Secrets와 환경변수 지원
 
 ## Streamlit Secrets
-
-다음 중 하나의 형태로 설정할 수 있습니다.
-
-### 단일 키 형태
 ```toml
-GEMINI_API_KEY = "..."
 NAVER_CLIENT_ID = "..."
 NAVER_CLIENT_SECRET = "..."
 NAVER_BLOG_ID = "..."
+GEMINI_API_KEY = "..."
 ```
 
-### 그룹 형태
-```toml
-[naver]
-client_id = "..."
-client_secret = "..."
-blog_id = "..."
+또는 `[naver]`, `[gemini]` 그룹 형식도 지원합니다.
 
-[gemini]
-api_key = "..."
+## 실행
+```bash
+pip install -r requirements.txt
+streamlit run streamlit_app.py
 ```
 
-Secrets를 수정한 뒤에는 Streamlit 앱을 재시작/재배포하세요.
-
-## 중요
-
-Client ID/Secret은 GitHub에 올리지 마세요.
+API 키는 코드나 GitHub에 직접 넣지 마세요.

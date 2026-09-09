@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 st.set_page_config(
-    page_title="네이버 콘텐츠 기회 분석기 V1.3",
+    page_title="네이버 콘텐츠 기회 분석기 V1.4",
     page_icon="🔎",
     layout="wide",
 )
@@ -24,11 +24,14 @@ MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 def clean_html(text):
     return re.sub(r"<[^>]+>", "", text or "").replace("&quot;", '"').replace("&amp;", "&").strip()
 
+# NAVER API HUB 공통 엔드포인트
+NAVER_API_HUB_BASE = "https://naverapihub.apigw.ntruss.com"
+
 def naver_headers(client_id, client_secret):
-    # Naver Open API는 Client ID/Secret을 반드시 HTTP 헤더로 전달합니다.
+    """NAVER API HUB 인증 헤더."""
     return {
-        "X-Naver-Client-Id": (client_id or "").strip(),
-        "X-Naver-Client-Secret": (client_secret or "").strip(),
+        "X-NCP-APIGW-API-KEY-ID": (client_id or "").strip(),
+        "X-NCP-APIGW-API-KEY": (client_secret or "").strip(),
         "Accept": "application/json",
     }
 
@@ -67,21 +70,36 @@ def _raise_naver_error(r, api_name):
         response=r,
     )
 
-def naver_search(api, query, client_id, client_secret, display=10, sort="sim"):
-    url = f"https://openapi.naver.com/v1/search/{api}.json"
+def naver_search(api, query, client_id, client_secret, display=10, sort=None):
+    """NAVER API HUB 검색 API 호출.
+
+    지원 검색 엔드포인트: blog, news, webkr, image
+    webkr는 sort 파라미터를 보내지 않습니다.
+    """
+    url = f"{NAVER_API_HUB_BASE}/search/v1/{api}"
+    params = {
+        "query": query,
+        "display": min(max(int(display), 1), 100),
+        "format": "json",
+    }
+    if sort and api in {"blog", "news", "image"}:
+        params["sort"] = sort
+    if api == "image":
+        params["filter"] = "all"
+
     r = requests.get(
         url,
         headers=naver_headers(client_id, client_secret),
-        params={"query": query, "display": display, "sort": sort},
-        timeout=15,
+        params=params,
+        timeout=20,
     )
-    _raise_naver_error(r, f"네이버 {api} 검색 API")
+    _raise_naver_error(r, f"네이버 API HUB {api} 검색 API")
     return r.json()
 
 def naver_trend(keyword, client_id, client_secret, days=30):
     end = date.today()
     start = end - timedelta(days=days)
-    url = "https://openapi.naver.com/v1/datalab/search"
+    url = f"{NAVER_API_HUB_BASE}/search-trend/v1/search"
     payload = {
         "startDate": start.isoformat(),
         "endDate": end.isoformat(),
@@ -92,9 +110,9 @@ def naver_trend(keyword, client_id, client_secret, days=30):
         url,
         headers={**naver_headers(client_id, client_secret), "Content-Type": "application/json"},
         json=payload,
-        timeout=15,
+        timeout=20,
     )
-    _raise_naver_error(r, "네이버 검색어 트렌드 API")
+    _raise_naver_error(r, "네이버 API HUB 검색어 트렌드 API")
     return r.json()
 
 def naver_shopping_trend(keyword, category_code, client_id, client_secret, days=30):
@@ -102,21 +120,21 @@ def naver_shopping_trend(keyword, category_code, client_id, client_secret, days=
         return None
     end = date.today()
     start = end - timedelta(days=days)
-    url = "https://openapi.naver.com/v1/datalab/shopping/category/keyword"
+    url = f"{NAVER_API_HUB_BASE}/shopping/v1/category/keywords"
     payload = {
         "startDate": start.isoformat(),
         "endDate": end.isoformat(),
         "timeUnit": "date",
         "category": category_code,
-        "keyword": keyword,
+        "keyword": [{"name": keyword, "param": [keyword]}],
     }
     r = requests.post(
         url,
         headers={**naver_headers(client_id, client_secret), "Content-Type": "application/json"},
         json=payload,
-        timeout=15,
+        timeout=20,
     )
-    _raise_naver_error(r, "네이버 쇼핑인사이트 API")
+    _raise_naver_error(r, "네이버 API HUB 쇼핑인사이트 API")
     return r.json()
 
 def extract_blog_id(url_or_id):
@@ -383,7 +401,7 @@ if "connection_test" not in st.session_state:
 
 with st.sidebar:
     st.header("⚙️ 설정")
-    st.caption("API 키는 이 브라우저 세션에서만 사용합니다. GitHub에는 저장하지 않습니다.")
+    st.caption("NAVER API HUB 방식으로 연결합니다. API 키는 이 브라우저 세션에서만 사용하며 GitHub에는 저장하지 않습니다.")
 
     with st.form("api_settings_form", clear_on_submit=False):
         st.text_input(
@@ -469,7 +487,7 @@ naver_secret = st.session_state.naver_secret
 own_blog = st.session_state.own_blog
 
 if not gemini_key or not naver_id or not naver_secret:
-    st.title("🔎 네이버 콘텐츠 기회 분석기 V1.3")
+    st.title("🔎 네이버 콘텐츠 기회 분석기 V1.4")
     st.info("왼쪽 사이드바에 Gemini API Key와 Naver Client ID / Secret을 입력하면 시작할 수 있어요.")
     st.markdown("""
 ### 이 버전에서 하는 일
