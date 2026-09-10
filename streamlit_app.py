@@ -1150,70 +1150,93 @@ if analysis:
             if fact:
                 st.write(f"확인 내용: {fact}")
 
-    tabs = st.tabs(["🔑 키워드", "📊 경쟁 콘텐츠", "🧩 콘텐츠 GAP", "📚 내 기존글", "🏠 홈판 전략"])
+    # 분석 결과는 탭으로 숨기지 않고 한 화면에서 순서대로 보여줍니다.
+    # 키워드 관련 항목은 작은 글씨와 구분선으로 압축해 가독성을 높입니다.
+    st.markdown("""
+    <style>
+    .analysis-section-title { font-size: 1.05rem; font-weight: 700; margin: 0.35rem 0 0.45rem 0; }
+    .analysis-subtitle { font-size: 0.88rem; font-weight: 700; margin: 0.55rem 0 0.18rem 0; }
+    .keyword-compact { font-size: 0.82rem; line-height: 1.65; color: #444; }
+    .analysis-box { padding: 0.65rem 0.8rem; border: 1px solid #e8e8e8; border-radius: 8px; margin-bottom: 0.55rem; }
+    </style>
+    """, unsafe_allow_html=True)
 
-    with tabs[0]:
-        st.markdown("### 연관 키워드")
-        st.write(", ".join(analysis.get("related_keywords", [])) or "-")
-        st.markdown("### 롱테일 키워드")
-        st.write(", ".join(analysis.get("long_tail_keywords", [])) or "-")
-        st.markdown("### 제목 패턴")
-        for x in analysis.get("title_patterns", []):
-            st.write(f"• {x}")
+    st.markdown('<div class="analysis-section-title">🔑 1. 키워드 분석</div>', unsafe_allow_html=True)
+    st.markdown('<div class="analysis-box">', unsafe_allow_html=True)
+    st.markdown('<div class="analysis-subtitle">연관 키워드</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="keyword-compact">{", ".join(analysis.get("related_keywords", [])) or "-"}</div>', unsafe_allow_html=True)
+    st.markdown('<div class="analysis-subtitle">롱테일 키워드</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="keyword-compact">{", ".join(analysis.get("long_tail_keywords", [])) or "-"}</div>', unsafe_allow_html=True)
+    st.markdown('<div class="analysis-subtitle">제목 패턴</div>', unsafe_allow_html=True)
+    patterns = analysis.get("title_patterns", []) or []
+    st.markdown(f'<div class="keyword-compact">{" · ".join(str(x) for x in patterns) if patterns else "-"}</div>', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
 
-    with tabs[1]:
-        st.markdown("### 검색 결과에서 반복되는 주제")
-        for x in analysis.get("recommended_outline", []):
-            st.write(f"• {x}")
-        st.markdown("### 경쟁 수준")
-        st.write(analysis.get("competition", "-"))
-        st.caption("이 분석은 네이버 블로그 검색 API 결과의 제목·설명 등을 기반으로 한 요약이며, 경쟁 블로그 전체 본문을 직접 분석한 결과가 아닙니다.")
+    st.markdown('<div class="analysis-section-title">📊 2. 경쟁 콘텐츠</div>', unsafe_allow_html=True)
+    st.markdown('<div class="analysis-box">', unsafe_allow_html=True)
+    st.markdown('<div class="analysis-subtitle">검색 결과에서 반복되는 주제</div>', unsafe_allow_html=True)
+    for x in analysis.get("recommended_outline", []):
+        st.write(f"• {x}")
+    st.markdown('<div class="analysis-subtitle">경쟁 수준</div>', unsafe_allow_html=True)
+    st.write(analysis.get("competition", "-"))
+    st.caption("네이버 블로그 검색 API 결과의 제목·설명 등을 기반으로 한 요약이며, 경쟁 블로그 전체 본문을 직접 분석한 결과는 아닙니다.")
+    st.markdown('</div>', unsafe_allow_html=True)
 
-    with tabs[2]:
-        for x in analysis.get("content_gaps", []):
+    st.markdown('<div class="analysis-section-title">🧩 3. 콘텐츠 GAP</div>', unsafe_allow_html=True)
+    st.markdown('<div class="analysis-box">', unsafe_allow_html=True)
+    gaps = analysis.get("content_gaps", []) or []
+    if gaps:
+        for x in gaps:
             st.write(f"🧩 {x}")
+    else:
+        st.write("-")
+    st.markdown('</div>', unsafe_allow_html=True)
 
-    with tabs[3]:
-        st.markdown("### 기존 콘텐츠 자산 분석")
-        st.caption("🔎 " + analysis.get("own_search_note", ""))
-        specific = analysis.get("specific_existing_post", {}) or {}
-        if specific.get("status") == "ok":
-            st.success("🎯 지정한 기존글을 콘텐츠 자산으로 분석했습니다.")
-            st.markdown(f"**{specific.get('title') or specific.get('url','')}**")
-            st.caption(specific.get("url", ""))
-        elif specific.get("status") == "failed":
-            st.warning("입력한 특정 기존글 URL을 직접 읽지 못했습니다. 기존글 비교 없이 현재 키워드 기준으로 작성할 수 있습니다.")
-        else:
-            st.info("특정 기존글 URL이 입력되지 않았습니다. 이 탭의 기존글 비교 기능은 선택사항이며, 현재 키워드 분석과 글 작성은 그대로 진행됩니다.")
-        st.markdown("### 기존 글에서 이미 가진 자산")
-        st.write(analysis.get("existing_content_asset_summary", "-"))
-        st.markdown("### 현재 키워드와의 연결성")
-        st.write(analysis.get("existing_content_relevance", "-"))
-        st.markdown("### 기존 글의 강점")
-        for x in analysis.get("existing_content_strengths", []):
-            st.write(f"• {x}")
-        st.markdown("### 지금 새로 확장할 수 있는 포인트")
-        for x in analysis.get("current_time_extension_points", []):
-            st.write(f"🆕 {x}")
-        st.markdown("### 추천 신규 콘텐츠 기회")
-        for x in analysis.get("new_content_opportunities", []):
-            st.write(f"**{x.get('topic','')}** · {x.get('keyword','')}")
-            st.caption(f"검색의도: {x.get('search_intent','')} · {x.get('reason','')}")
-        st.markdown("### 자기잠식 주의")
-        st.write(analysis.get("cannibalization_note", "-"))
-        if not has_specific_asset:
-            st.caption("내 블로그 전체 자동 검색은 V2.3에서 제거했습니다. 기존글과 비교하려면 사이드바의 '특정 기존글 URL(선택)'에 원하는 글만 입력하세요.")
+    st.markdown('<div class="analysis-section-title">📚 4. 내 기존글</div>', unsafe_allow_html=True)
+    st.markdown('<div class="analysis-box">', unsafe_allow_html=True)
+    st.markdown("### 기존 콘텐츠 자산 분석")
+    st.caption("🔎 " + analysis.get("own_search_note", ""))
+    specific = analysis.get("specific_existing_post", {}) or {}
+    if specific.get("status") == "ok":
+        st.success("🎯 지정한 기존글을 콘텐츠 자산으로 분석했습니다.")
+        st.markdown(f"**{specific.get('title') or specific.get('url','')}**")
+        st.caption(specific.get("url", ""))
+    elif specific.get("status") == "failed":
+        st.warning("입력한 특정 기존글 URL을 직접 읽지 못했습니다. 기존글 비교 없이 현재 키워드 기준으로 작성할 수 있습니다.")
+    else:
+        st.info("특정 기존글 URL이 입력되지 않았습니다. 기존글 비교는 선택사항이며 현재 키워드 분석과 글 작성은 그대로 진행됩니다.")
+    st.markdown("**기존 글에서 이미 가진 자산**")
+    st.write(analysis.get("existing_content_asset_summary", "-"))
+    st.markdown("**현재 키워드와의 연결성**")
+    st.write(analysis.get("existing_content_relevance", "-"))
+    st.markdown("**기존 글의 강점**")
+    for x in analysis.get("existing_content_strengths", []):
+        st.write(f"• {x}")
+    st.markdown("**지금 새로 확장할 수 있는 포인트**")
+    for x in analysis.get("current_time_extension_points", []):
+        st.write(f"🆕 {x}")
+    st.markdown("**추천 신규 콘텐츠 기회**")
+    for x in analysis.get("new_content_opportunities", []):
+        st.write(f"**{x.get('topic','')}** · {x.get('keyword','')}")
+        st.caption(f"검색의도: {x.get('search_intent','')} · {x.get('reason','')}")
+    st.markdown("**자기잠식 주의**")
+    st.write(analysis.get("cannibalization_note", "-"))
+    if not has_specific_asset:
+        st.caption("내 블로그 전체 자동 검색은 V2.3에서 제거했습니다. 기존글과 비교하려면 사이드바의 '특정 기존글 URL(선택)'에 원하는 글만 입력하세요.")
+    st.markdown('</div>', unsafe_allow_html=True)
 
-    with tabs[4]:
-        st.markdown("### 홈판 콘텐츠 각도")
-        st.write(analysis.get("home_feed_angle", "-"))
-        st.markdown("### 적합도")
-        st.write(f"홈판 적합도 {analysis.get('home_feed_fit_score', 0)}/100 · 검색 적합도 {analysis.get('search_fit_score', 0)}/100")
-        st.markdown("### 추천 작성 유형")
-        st.write(analysis.get("recommended_content_mode", "-"))
-        st.markdown("### 추천 이유")
-        st.write(analysis.get("content_mode_reason", analysis.get("strategy_reason", "-")))
-        st.caption("홈판형은 반전·숫자·의외성·상황·경험을 제목/도입에 활용하고, 본문은 모바일 가독성과 이미지 흐름을 우선합니다.")
+    st.markdown('<div class="analysis-section-title">🏠 5. 홈판 전략</div>', unsafe_allow_html=True)
+    st.markdown('<div class="analysis-box">', unsafe_allow_html=True)
+    st.markdown("**홈판 콘텐츠 각도**")
+    st.write(analysis.get("home_feed_angle", "-"))
+    st.markdown("**적합도**")
+    st.write(f"홈판 적합도 {analysis.get('home_feed_fit_score', 0)}/100 · 검색 적합도 {analysis.get('search_fit_score', 0)}/100")
+    st.markdown("**추천 작성 유형**")
+    st.write(analysis.get("recommended_content_mode", "-"))
+    st.markdown("**추천 이유**")
+    st.write(analysis.get("content_mode_reason", analysis.get("strategy_reason", "-")))
+    st.caption("홈판형은 반전·숫자·의외성·상황·경험을 제목/도입에 활용하고, 본문은 모바일 가독성과 이미지 흐름을 우선합니다.")
+    st.markdown('</div>', unsafe_allow_html=True)
 
     st.divider()
     st.subheader("3. 글 작성")
