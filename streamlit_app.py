@@ -2,6 +2,10 @@
 import os
 import re
 import json
+import time
+import base64
+import hashlib
+import hmac
 from datetime import date, timedelta
 from urllib.parse import urlparse
 import requests
@@ -26,6 +30,80 @@ def clean_html(text):
 
 # NAVER API HUB 공통 엔드포인트
 NAVER_API_HUB_BASE = "https://naverapihub.apigw.ntruss.com"
+NAVER_SEARCHAD_BASE = "https://api.searchad.naver.com"
+
+def searchad_signature(timestamp, method, uri, secret_key):
+    """NAVER Search Ads API HMAC-SHA256 signature."""
+    message = f"{timestamp}.{method}.{uri}"
+    digest = hmac.new(
+        (secret_key or "").encode("utf-8"),
+        message.encode("utf-8"),
+        hashlib.sha256,
+    ).digest()
+    return base64.b64encode(digest).decode("utf-8")
+
+def naver_searchad_keyword_tool(keyword, access_license, secret_key, customer_id):
+    """NAVER Search Ads /keywordstool.
+    기준 키워드와 연관 키워드의 PC/모바일 월간 검색수, 경쟁도 등을 반환합니다.
+    조회 전용이며 광고 캠페인/입찰/예산을 변경하지 않습니다.
+    """
+    keyword = (keyword or "").strip()
+    if not keyword:
+        return {"keywordList": []}
+    if not access_license or not secret_key or not customer_id:
+        raise ValueError("네이버 검색광고 API의 Access License Key, Secret Key, Customer ID를 모두 입력해 주세요.")
+
+    uri = "/keywordstool"
+    timestamp = str(int(time.time() * 1000))
+    headers = {
+        "X-Timestamp": timestamp,
+        "X-API-KEY": access_license.strip(),
+        "X-Customer": str(customer_id).strip(),
+        "X-Signature": searchad_signature(timestamp, "GET", uri, secret_key.strip()),
+        "Content-Type": "application/json; charset=UTF-8",
+    }
+    params = {
+        "hintKeywords": keyword.replace(" ", ""),
+        "includeHintKeywords": "1",
+        "showDetail": "1",
+    }
+    r = requests.get(f"{NAVER_SEARCHAD_BASE}{uri}", headers=headers, params=params, timeout=20)
+    if not r.ok:
+        try:
+            detail = r.json()
+        except Exception:
+            detail = r.text[:500]
+        raise requests.HTTPError(f"네이버 검색광고 키워드 도구 실패: HTTP {r.status_code} · {detail}", response=r)
+    return r.json()
+
+def normalize_searchad_count(value):
+    """검색량의 '< 10' 같은 문자열을 안전하게 표시하기 위한 함수."""
+    if isinstance(value, (int, float)):
+        return int(value)
+    text = str(value or "").strip()
+    if text.startswith("<"):
+        return text
+    digits = re.sub(r"[^0-9]", "", text)
+    return int(digits) if digits else 0
+
+def compact_searchad_keywords(data, limit=50):
+    rows = []
+    for item in (data or {}).get("keywordList", [])[:limit]:
+        pc = normalize_searchad_count(item.get("monthlyPcQcCnt"))
+        mobile = normalize_searchad_count(item.get("monthlyMobileQcCnt"))
+        total = (pc if isinstance(pc, (int, float)) else 0) + (mobile if isinstance(mobile, (int, float)) else 0)
+        rows.append({
+            "keyword": item.get("relKeyword", ""),
+            "pc_search": pc,
+            "mobile_search": mobile,
+            "total_search": total,
+            "competition": item.get("compIdx", "-"),
+            "pc_ctr": item.get("monthlyAvePcCtr", "-"),
+            "mobile_ctr": item.get("monthlyAveMobileCtr", "-"),
+            "ad_depth": item.get("plAvgDepth", "-"),
+        })
+    return rows
+
 
 def naver_headers(client_id, client_secret):
     """NAVER API HUB 인증 헤더."""
@@ -274,18 +352,6 @@ ANALYSIS_SCHEMA = {
         "related_keywords": {"type": "ARRAY", "items": {"type": "STRING"}},
         "long_tail_keywords": {"type": "ARRAY", "items": {"type": "STRING"}},
         "title_patterns": {"type": "ARRAY", "items": {"type": "STRING"}},
-        "recommended_titles": {
-            "type": "ARRAY",
-            "items": {
-                "type": "OBJECT",
-                "properties": {
-                    "title": {"type": "STRING"},
-                    "angle": {"type": "STRING"},
-                    "why": {"type": "STRING"}
-                },
-                "required": ["title", "angle", "why"]
-            }
-        },
         "current_source_facts": {
             "type": "ARRAY",
             "items": {
@@ -350,7 +416,7 @@ ANALYSIS_SCHEMA = {
     },
     "required": [
         "search_intent", "competition", "opportunity", "trend_interpretation",
-        "related_keywords", "long_tail_keywords", "title_patterns", "recommended_titles",
+        "related_keywords", "long_tail_keywords", "title_patterns",
         "current_source_facts", "freshness_warning",
         "content_gaps", "home_feed_angle", "search_fit_score", "home_feed_fit_score",
         "recommended_content_mode", "content_mode_reason", "official_sources", "recommended_strategy",
@@ -523,9 +589,9 @@ def analyze_with_ai(client, payload):
 5. 검색 결과 제목만 보고 사실을 확정하지 말고, 제공된 source_pages/current_source_facts에서 근거가 있는 내용만 현재 사실로 취급하세요.
 6. 근거가 부족하면 '현재 확인 필요'로 표시하고 글에 단정적으로 넣지 마세요.
 7. '2026년 9월'처럼 날짜가 중요한 제목은 현재 기준일과 실제 확인된 기간이 맞는 경우에만 사용하세요.
-8. 추천 제목은 실제로 작성할 글의 방향을 결정하는 단계입니다. 제목과 본문이 서로 다른 주제로 흘러가지 않도록 검색의도와 최신 근거를 반영해 3개를 만드세요.
+8. 검색형과 홈판형의 적합도를 각각 0~100으로 평가하세요. 이 점수는 사용자에게 선택권을 주기 위한 참고값이며, AI가 작성 유형을 자동 선택해서는 안 됩니다.
 9. 검색형은 정보 정확성과 검색 의도 충족을 최우선으로 하고, 홈판형은 클릭을 유도하는 제목·첫 문장·이미지 흐름을 최우선으로 하세요.
-10. 사용자가 요청한 작성 유형이 AUTO면 검색 적합도와 홈판 적합도를 각각 0~100으로 평가하고 추천 유형을 정하세요.
+10. 추천 작성 유형을 계산하더라도 UI에서 자동 선택하거나 글 작성 유형으로 확정하지 마세요.
 11. 지원금·정부정책·공공정보·축제 등 공식 확인이 중요한 키워드는 공식 홈페이지 후보를 우선 검토하고, 실제 확인 가능한 URL과 그 페이지에서 가져온 핵심 사실을 official_sources에 남기세요. 공식 URL이 확인되지 않으면 억지로 만들지 마세요.
 12. 쿠팡파트너스 링크는 제품 추천/구매 의도가 실제로 있는 경우에만 필요 여부를 판단하고, 최대 1개 선택사항으로만 표시하세요. 애드센스 유도용 외부 링크는 제안하지 마세요.
 
@@ -559,6 +625,10 @@ def analyze_with_ai(client, payload):
 - current_source_facts에는 최소한 글에 실제로 사용할 가치가 높은 사실만 넣고, source_url을 반드시 남기세요.
 - 최신 정보가 부족하면 freshness_warning에 명확히 적으세요.
 
+[네이버 검색광고 키워드 도구 데이터]
+{json.dumps(payload.get("searchad_keyword_data", []), ensure_ascii=False, indent=2)}
+- 이 데이터는 검색광고 키워드 도구의 월간 PC/모바일 검색수와 경쟁도입니다. 유기적 네이버 검색 노출량과 동일하다고 단정하지 마세요.
+
 [입력]
 {json.dumps(payload, ensure_ascii=False, indent=2)}
 
@@ -566,6 +636,55 @@ JSON으로만 답하세요.
 """
     return gemini_json(client, prompt, ANALYSIS_SCHEMA, 8500)
 
+
+TITLE_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "titles": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "title": {"type": "STRING"},
+                    "angle": {"type": "STRING"},
+                    "why": {"type": "STRING"},
+                },
+                "required": ["title", "angle", "why"],
+            },
+        }
+    },
+    "required": ["titles"],
+}
+
+def generate_titles_for_mode(client, analysis_payload, mode):
+    mode_label = {"SEARCH": "검색형", "HOME_FEED": "홈판형", "HYBRID": "혼합형"}.get(mode, mode)
+    prompt = f"""
+당신은 네이버 블로그 제목 편집자입니다.
+아래 분석 데이터를 바탕으로 사용자가 직접 선택한 작성 유형 '{mode_label}'에 맞는 제목 3개만 만드세요.
+
+[작성 유형]
+{mode_label}
+
+[규칙]
+- 검색형: 검색 의도와 핵심 키워드가 명확해야 합니다.
+- 홈판형: 반전, 숫자, 의외성, 상황, 경험, 궁금증 중 서로 다른 클릭 장치를 사용하세요.
+- 혼합형: 검색 의도와 클릭성을 균형 있게 잡으세요.
+- 확인되지 않은 최신 날짜, 할인율, 코드, 가격, 이벤트는 제목에 넣지 마세요.
+- 제목에서 약속한 내용은 실제 본문으로 작성할 수 있어야 합니다.
+- 정확히 3개를 반환하세요.
+
+키워드: {analysis_payload.get("keyword", "")}
+검색 의도: {analysis_payload.get("search_intent", "")}
+콘텐츠 GAP: {json.dumps(analysis_payload.get("content_gaps", []), ensure_ascii=False)}
+연관 키워드: {json.dumps(analysis_payload.get("related_keywords", []), ensure_ascii=False)}
+롱테일 키워드: {json.dumps(analysis_payload.get("long_tail_keywords", []), ensure_ascii=False)}
+검색광고 키워드 데이터: {json.dumps(analysis_payload.get("searchad_keyword_data", []), ensure_ascii=False)}
+현재 근거: {json.dumps(analysis_payload.get("current_source_facts", []), ensure_ascii=False)}
+
+JSON으로만 답하세요.
+"""
+    result = gemini_json(client, prompt, TITLE_SCHEMA, 2500)
+    return (result.get("titles", []) or [])[:3]
 
 def write_with_ai(client, analysis_payload, writing_options):
     selected_title = writing_options.get("selected_title", "").strip()
@@ -798,6 +917,9 @@ for _key, _env, _secret_paths in [
     ("gemini_key", "GEMINI_API_KEY", ("GEMINI_API_KEY", "gemini.api_key")),
     ("naver_id", "NAVER_CLIENT_ID", ("NAVER_CLIENT_ID", "naver.client_id")),
     ("naver_secret", "NAVER_CLIENT_SECRET", ("NAVER_CLIENT_SECRET", "naver.client_secret")),
+    ("searchad_access", "NAVER_SEARCHAD_ACCESS_LICENSE", ("NAVER_SEARCHAD_ACCESS_LICENSE", "searchad.access_license")),
+    ("searchad_secret", "NAVER_SEARCHAD_SECRET_KEY", ("NAVER_SEARCHAD_SECRET_KEY", "searchad.secret_key")),
+    ("searchad_customer_id", "NAVER_SEARCHAD_CUSTOMER_ID", ("NAVER_SEARCHAD_CUSTOMER_ID", "searchad.customer_id")),
     ("own_blog", "NAVER_BLOG_ID", ("NAVER_BLOG_ID", "naver.blog_id")),
 ]:
     if _key not in st.session_state or not st.session_state[_key]:
@@ -827,6 +949,11 @@ with st.sidebar:
             type="password",
             key="naver_secret",
         )
+        st.markdown("**네이버 검색광고 API**")
+        st.text_input("검색광고 Access License Key", type="password", key="searchad_access")
+        st.text_input("검색광고 Secret Key", type="password", key="searchad_secret")
+        st.text_input("검색광고 Customer ID", key="searchad_customer_id")
+        st.caption("키워드 도구 조회 전용입니다. PC/모바일 검색량·경쟁도 확인에 사용합니다.")
         save_settings = st.form_submit_button(
             "💾 설정 저장",
             type="primary",
@@ -866,6 +993,14 @@ with st.sidebar:
             except Exception as e:
                 results["검색어 트렌드 API"] = f"실패: {e}"
 
+            if st.session_state.searchad_access and st.session_state.searchad_secret and st.session_state.searchad_customer_id:
+                try:
+                    test_ad = naver_searchad_keyword_tool(
+                        "비짓재팬", st.session_state.searchad_access, st.session_state.searchad_secret, st.session_state.searchad_customer_id
+                    )
+                    results["검색광고 키워드 도구 API"] = "정상" if "keywordList" in test_ad else "응답 확인 필요"
+                except Exception as e:
+                    results["검색광고 키워드 도구 API"] = f"실패: {e}"
             st.session_state.connection_test = results
 
     if st.session_state.connection_test:
@@ -889,32 +1024,20 @@ with st.sidebar:
         placeholder="예: https://blog.naver.com/ladisu/223000000000",
         help="정확히 분석하고 싶은 과거 글이 있다면 입력하세요. 입력하면 이 글을 최우선 원본 자산으로 분석합니다.",
     )
-    st.divider()
-    st.subheader("작성 기본값")
-    tone = st.selectbox("말투", ["친근한 정보형", "담백한 정보형", "전문적인 정보형"])
-    content_mode_request = st.selectbox(
-        "작성 유형",
-        ["AUTO", "HOME_FEED", "SEARCH", "HYBRID"],
-        format_func=lambda x: {
-            "AUTO": "AI 추천",
-            "HOME_FEED": "홈판형 (1500~2000자)",
-            "SEARCH": "검색형 (3000자 이상)",
-            "HYBRID": "혼합형 (2500~3500자)"
-        }[x],
-        help="키워드 분석 후 AI가 추천 유형을 제시합니다. 직접 홈판형/검색형으로 고정할 수도 있습니다.",
-    )
-    length = {
-        "HOME_FEED": "공백 제외 1500~2000자",
-        "SEARCH": "공백 제외 3000자 이상",
-        "HYBRID": "공백 제외 2500~3500자",
-        "AUTO": "AI 추천 유형에 맞춰 자동 적용",
-    }[content_mode_request]
 
 # 실제 API 호출에는 세션에 저장된 값을 사용합니다.
 gemini_key = st.session_state.gemini_key
 naver_id = st.session_state.naver_id
 naver_secret = st.session_state.naver_secret
 own_blog = st.session_state.own_blog
+
+# 실제 작성 유형은 분석 결과를 본 뒤 사용자가 직접 선택합니다.
+content_mode_request = st.session_state.get("selected_content_mode", "")
+length = {
+    "HOME_FEED": "공백 제외 1500~2000자",
+    "SEARCH": "공백 제외 3000자 이상",
+    "HYBRID": "공백 제외 2500~3500자",
+}.get(content_mode_request, "")
 
 if not gemini_key or not naver_id or not naver_secret:
     st.title("🔎 네이버 콘텐츠 기회 분석기 V2.4")
@@ -944,6 +1067,10 @@ if "selected_title" not in st.session_state:
     st.session_state.selected_title = ""
 if "selected_title_reason" not in st.session_state:
     st.session_state.selected_title_reason = ""
+if "selected_content_mode" not in st.session_state:
+    st.session_state.selected_content_mode = ""
+if "title_options" not in st.session_state:
+    st.session_state.title_options = []
 
 st.subheader("1. 키워드 입력")
 c1, c2 = st.columns([3, 1])
@@ -1011,16 +1138,30 @@ if analyze_clicked:
                 )
 
             benchmark = fetch_benchmark(benchmark_url)
+            searchad_data = {"keywordList": []}
+            if st.session_state.get("searchad_access") and st.session_state.get("searchad_secret") and st.session_state.get("searchad_customer_id"):
+                st.write("⑨ 네이버 검색광고 키워드 도구")
+                try:
+                    searchad_data = naver_searchad_keyword_tool(
+                        keyword,
+                        st.session_state.searchad_access,
+                        st.session_state.searchad_secret,
+                        st.session_state.searchad_customer_id,
+                    )
+                except Exception as e:
+                    searchad_data = {"keywordList": []}
+                    st.warning(f"검색광고 키워드 데이터는 가져오지 못했지만 나머지 분석은 계속합니다: {e}")
+
             payload = build_analysis_payload(
                 keyword, category, trend, blog, news, web, images,
                 shopping, benchmark, specific_post=specific_post, blog_id=blog_id,
                 current_web=current_web, source_pages=source_pages
             )
-            payload["requested_content_mode"] = content_mode_request
+            payload["searchad_keyword_data"] = compact_searchad_keywords(searchad_data, limit=50)
             payload["official_candidate_results"] = compact_results(official_candidates, ["title", "description", "link"])
             payload["official_source_pages"] = official_source_pages
 
-            st.write("⑨ AI 콘텐츠 전략 분석")
+            st.write("⑩ AI 콘텐츠 전략 분석")
             ai = analyze_with_ai(client, payload)
             payload.update(ai)
 
@@ -1038,16 +1179,12 @@ if analyze_clicked:
                 payload["cannibalization_note"] = "기존글 URL을 지정하지 않았으므로 특정 기존글과의 자기잠식 비교는 수행하지 않았습니다."
 
             st.session_state.analysis = payload
-            titles = payload.get("recommended_titles", []) or []
-            # 화면에서는 항상 최대 3개 후보만 제시합니다.
-            payload["recommended_titles"] = titles[:3]
-            titles = payload["recommended_titles"]
-            if titles:
-                st.session_state.selected_title = titles[0].get("title", "")
-                st.session_state.selected_title_reason = titles[0].get("why", "")
-            else:
-                st.session_state.selected_title = ""
-                st.session_state.selected_title_reason = ""
+            st.session_state.selected_content_mode = ""
+            st.session_state.selected_title = ""
+            st.session_state.selected_title_reason = ""
+            st.session_state.title_options = []
+            st.session_state.pop("content_mode_radio", None)
+            st.session_state.pop("selected_title_radio", None)
             st.session_state.article = None
             status.update(label="분석 완료", state="complete")
         except Exception as e:
@@ -1086,7 +1223,6 @@ if analysis:
         _row("검색 의도", analysis.get("search_intent", "-")) +
         _row("검색 적합도", f"{analysis.get('search_fit_score', 0)}/100") +
         _row("홈판 적합도", f"{analysis.get('home_feed_fit_score', 0)}/100") +
-        _row("추천 작성 유형", analysis.get("recommended_content_mode", "-")) +
         _row("내 기존 관련글", f"{own_count}개") +
         '</div>',
         unsafe_allow_html=True,
@@ -1104,9 +1240,43 @@ if analysis:
     st.info(f"추천 콘텐츠 전략: **{strategy_labels.get(strategy, strategy)}")
     st.write(analysis.get("strategy_reason", ""))
 
-    st.markdown("### 🎯 글 작성용 추천 제목 3가지")
-    st.caption("제목 패턴만 보고 글을 쓰지 않고, 아래에서 실제 작성할 제목을 하나 선택합니다. 선택한 제목이 글의 핵심 방향이 됩니다.")
-    title_options = analysis.get("recommended_titles", []) or []
+    st.markdown("### ✍️ 글 작성 유형 선택")
+    st.caption("적합도는 참고값입니다. 실제 작성 유형은 AI가 자동으로 정하지 않고, 여기에서 직접 선택합니다.")
+    mode_labels = {
+        "SEARCH": "🔎 검색형 (공백 제외 3000자 이상)",
+        "HOME_FEED": "🏠 홈판형 (공백 제외 1500~2000자)",
+        "HYBRID": "🔄 혼합형 (공백 제외 2500~3500자)",
+    }
+    mode_values = ["SEARCH", "HOME_FEED", "HYBRID"]
+    current_mode = st.session_state.get("selected_content_mode", "")
+    selected_mode = st.radio(
+        "작성할 글 유형",
+        mode_values,
+        index=(mode_values.index(current_mode) if current_mode in mode_values else None),
+        format_func=lambda x: mode_labels[x],
+        horizontal=True,
+        key="content_mode_radio",
+    )
+    if selected_mode != st.session_state.get("selected_content_mode"):
+        st.session_state.selected_content_mode = selected_mode
+        st.session_state.selected_title = ""
+        st.session_state.selected_title_reason = ""
+        st.session_state.title_options = []
+        st.session_state.pop("selected_title_radio", None)
+
+    if st.button("🎯 선택한 유형의 추천 제목 보기", use_container_width=True):
+        with st.spinner("선택한 작성 유형에 맞는 제목 3개를 만드는 중..."):
+            try:
+                st.session_state.title_options = generate_titles_for_mode(client, analysis, selected_mode)
+                if st.session_state.title_options:
+                    st.session_state.selected_title = st.session_state.title_options[0].get("title", "")
+                    st.session_state.selected_title_reason = st.session_state.title_options[0].get("why", "")
+                else:
+                    st.warning("추천 제목을 생성하지 못했습니다.")
+            except Exception as e:
+                st.error(f"추천 제목 생성 중 오류가 발생했습니다: {e}")
+
+    title_options = st.session_state.get("title_options", []) or []
     if title_options:
         labels = [x.get("title", "").strip() for x in title_options if x.get("title", "").strip()]
         if labels:
@@ -1119,10 +1289,7 @@ if analysis:
             st.session_state.selected_title_reason = selected_obj.get("why", "")
             if selected_obj.get("angle"):
                 st.caption(f"선택 제목의 작성 각도: {selected_obj.get('angle')}")
-        else:
-            st.warning("추천 제목을 생성하지 못했습니다. 제목 패턴을 참고해 직접 제목을 선택해 주세요.")
-    else:
-        st.warning("추천 제목이 없습니다. 제목 패턴을 참고해 직접 제목을 선택해 주세요.")
+
 
     if analysis.get("freshness_warning"):
         st.warning("⚠️ 최신 정보 확인: " + analysis.get("freshness_warning"))
@@ -1150,93 +1317,75 @@ if analysis:
             if fact:
                 st.write(f"확인 내용: {fact}")
 
-    # 분석 결과는 탭으로 숨기지 않고 한 화면에서 순서대로 보여줍니다.
-    # 키워드 관련 항목은 작은 글씨와 구분선으로 압축해 가독성을 높입니다.
+    # 분석 결과는 2열 x 3행 카드 그리드로 표시합니다. 각 카드는 내부 스크롤을 가집니다.
+    from html import escape as html_escape
     st.markdown("""
     <style>
-    .analysis-section-title { font-size: 1.05rem; font-weight: 700; margin: 0.35rem 0 0.45rem 0; }
-    .analysis-subtitle { font-size: 0.88rem; font-weight: 700; margin: 0.55rem 0 0.18rem 0; }
-    .keyword-compact { font-size: 0.82rem; line-height: 1.65; color: #444; }
-    .analysis-box { padding: 0.65rem 0.8rem; border: 1px solid #e8e8e8; border-radius: 8px; margin-bottom: 0.55rem; }
+    .analysis-card{border:1px solid #e5e7eb;border-radius:12px;background:#fff;padding:14px 16px;height:340px;overflow-y:auto;box-sizing:border-box;margin-bottom:14px;}
+    .analysis-card h4{font-size:1rem;margin:0 0 10px 0;}
+    .analysis-card h5{font-size:.82rem;margin:11px 0 4px;color:#555;}
+    .analysis-card p,.analysis-card li{font-size:.86rem;line-height:1.55;}
+    .analysis-card .small{font-size:.78rem;color:#666;line-height:1.5;}
+    .keyword-compact{font-size:.78rem;line-height:1.6;color:#444;}
+    .kw-table{width:100%;border-collapse:collapse;font-size:.75rem;}
+    .kw-table th,.kw-table td{border-bottom:1px solid #eee;padding:6px 4px;text-align:left;vertical-align:top;}
+    .kw-table th{position:sticky;top:0;background:#fafafa;z-index:1;}
     </style>
     """, unsafe_allow_html=True)
 
-    st.markdown('<div class="analysis-section-title">🔑 1. 키워드 분석</div>', unsafe_allow_html=True)
-    st.markdown('<div class="analysis-box">', unsafe_allow_html=True)
-    st.markdown('<div class="analysis-subtitle">연관 키워드</div>', unsafe_allow_html=True)
-    st.markdown(f'<div class="keyword-compact">{", ".join(analysis.get("related_keywords", [])) or "-"}</div>', unsafe_allow_html=True)
-    st.markdown('<div class="analysis-subtitle">롱테일 키워드</div>', unsafe_allow_html=True)
-    st.markdown(f'<div class="keyword-compact">{", ".join(analysis.get("long_tail_keywords", [])) or "-"}</div>', unsafe_allow_html=True)
-    st.markdown('<div class="analysis-subtitle">제목 패턴</div>', unsafe_allow_html=True)
-    patterns = analysis.get("title_patterns", []) or []
-    st.markdown(f'<div class="keyword-compact">{" · ".join(str(x) for x in patterns) if patterns else "-"}</div>', unsafe_allow_html=True)
-    st.markdown('</div>', unsafe_allow_html=True)
+    def html_card(title, body):
+        return f'<div class="analysis-card"><h4>{title}</h4>{body}</div>'
 
-    st.markdown('<div class="analysis-section-title">📊 2. 경쟁 콘텐츠</div>', unsafe_allow_html=True)
-    st.markdown('<div class="analysis-box">', unsafe_allow_html=True)
-    st.markdown('<div class="analysis-subtitle">검색 결과에서 반복되는 주제</div>', unsafe_allow_html=True)
-    for x in analysis.get("recommended_outline", []):
-        st.write(f"• {x}")
-    st.markdown('<div class="analysis-subtitle">경쟁 수준</div>', unsafe_allow_html=True)
-    st.write(analysis.get("competition", "-"))
-    st.caption("네이버 블로그 검색 API 결과의 제목·설명 등을 기반으로 한 요약이며, 경쟁 블로그 전체 본문을 직접 분석한 결과는 아닙니다.")
-    st.markdown('</div>', unsafe_allow_html=True)
+    related = ", ".join(html_escape(str(x)) for x in analysis.get("related_keywords", [])) or "-"
+    longtails = ", ".join(html_escape(str(x)) for x in analysis.get("long_tail_keywords", [])) or "-"
+    patterns = " · ".join(html_escape(str(x)) for x in (analysis.get("title_patterns", []) or [])) or "-"
+    card1 = html_card("🔑 1. 키워드 분석", f"<h5>연관 키워드</h5><div class=\"keyword-compact\">{related}</div><h5>롱테일 키워드</h5><div class=\"keyword-compact\">{longtails}</div><h5>제목 패턴</h5><div class=\"keyword-compact\">{patterns}</div>")
 
-    st.markdown('<div class="analysis-section-title">🧩 3. 콘텐츠 GAP</div>', unsafe_allow_html=True)
-    st.markdown('<div class="analysis-box">', unsafe_allow_html=True)
-    gaps = analysis.get("content_gaps", []) or []
-    if gaps:
-        for x in gaps:
-            st.write(f"🧩 {x}")
+    outline = "".join(f"<li>{html_escape(str(x))}</li>" for x in (analysis.get("recommended_outline", []) or [])) or "<li>-</li>"
+    card2 = html_card("📊 2. 경쟁 콘텐츠", f"<h5>검색 결과에서 반복되는 주제</h5><ul>{outline}</ul><h5>경쟁 수준</h5><p>{html_escape(str(analysis.get('competition', '-')))}</p><div class=\"small\">네이버 블로그 검색 API의 제목·설명 등을 기반으로 한 요약입니다.</div>")
+
+    gaps = "".join(f"<li>🧩 {html_escape(str(x))}</li>" for x in (analysis.get("content_gaps", []) or [])) or "<li>-</li>"
+    card3 = html_card("🧩 3. 콘텐츠 GAP", f"<ul>{gaps}</ul>")
+
+    home_angle = html_escape(str(analysis.get("home_feed_angle", "-")))
+    fit_reason = html_escape(str(analysis.get("content_mode_reason", analysis.get("strategy_reason", "-"))))
+    card4 = html_card("🏠 4. 홈판 전략", f"<h5>홈판 콘텐츠 각도</h5><p>{home_angle}</p><h5>적합도</h5><p>홈판 {analysis.get('home_feed_fit_score',0)}/100 · 검색 {analysis.get('search_fit_score',0)}/100</p><h5>판단 근거</h5><p>{fit_reason}</p><div class=\"small\">적합도는 참고값이며 작성 유형은 사용자가 직접 선택합니다.</div>")
+
+    ad_rows = analysis.get("searchad_keyword_data", []) or []
+    if ad_rows:
+        trs=[]
+        for r in ad_rows:
+            trs.append(f"<tr><td>{html_escape(str(r.get('keyword','-')))}</td><td>{html_escape(str(r.get('pc_search','-')))}</td><td>{html_escape(str(r.get('mobile_search','-')))}</td><td>{html_escape(str(r.get('total_search','-')))}</td><td>{html_escape(str(r.get('competition','-')))}</td></tr>")
+        ad_table = '<table class="kw-table"><thead><tr><th>키워드</th><th>PC</th><th>모바일</th><th>합계</th><th>경쟁도</th></tr></thead><tbody>' + ''.join(trs) + '</tbody></table>'
     else:
-        st.write("-")
-    st.markdown('</div>', unsafe_allow_html=True)
+        ad_table = '<p>검색광고 API 키를 설정하면 입력 키워드 기준 추천 키워드와 PC/모바일 검색량·경쟁도가 표시됩니다.</p>'
+    card5 = html_card("🔎 5. 추천 키워드 · 검색광고 데이터", '<div class="small">네이버 검색광고 키워드 도구의 연관 키워드입니다. 월간 PC/모바일 검색수와 경쟁도를 참고하세요.</div>' + ad_table)
 
-    st.markdown('<div class="analysis-section-title">📚 4. 내 기존글</div>', unsafe_allow_html=True)
-    st.markdown('<div class="analysis-box">', unsafe_allow_html=True)
-    st.markdown("### 기존 콘텐츠 자산 분석")
-    st.caption("🔎 " + analysis.get("own_search_note", ""))
     specific = analysis.get("specific_existing_post", {}) or {}
     if specific.get("status") == "ok":
-        st.success("🎯 지정한 기존글을 콘텐츠 자산으로 분석했습니다.")
-        st.markdown(f"**{specific.get('title') or specific.get('url','')}**")
-        st.caption(specific.get("url", ""))
+        asset_head = "🎯 지정한 기존글을 콘텐츠 자산으로 분석했습니다."
+        asset_detail = f"<p><b>{html_escape(str(specific.get('title') or specific.get('url','')))}</b></p><div class='small'>{html_escape(str(specific.get('url','')))}</div>"
     elif specific.get("status") == "failed":
-        st.warning("입력한 특정 기존글 URL을 직접 읽지 못했습니다. 기존글 비교 없이 현재 키워드 기준으로 작성할 수 있습니다.")
+        asset_head = "⚠️ 입력한 기존글 URL을 직접 읽지 못했습니다."
+        asset_detail = "<p>기존글 비교 없이 현재 키워드 기준으로 작성할 수 있습니다.</p>"
     else:
-        st.info("특정 기존글 URL이 입력되지 않았습니다. 기존글 비교는 선택사항이며 현재 키워드 분석과 글 작성은 그대로 진행됩니다.")
-    st.markdown("**기존 글에서 이미 가진 자산**")
-    st.write(analysis.get("existing_content_asset_summary", "-"))
-    st.markdown("**현재 키워드와의 연결성**")
-    st.write(analysis.get("existing_content_relevance", "-"))
-    st.markdown("**기존 글의 강점**")
-    for x in analysis.get("existing_content_strengths", []):
-        st.write(f"• {x}")
-    st.markdown("**지금 새로 확장할 수 있는 포인트**")
-    for x in analysis.get("current_time_extension_points", []):
-        st.write(f"🆕 {x}")
-    st.markdown("**추천 신규 콘텐츠 기회**")
-    for x in analysis.get("new_content_opportunities", []):
-        st.write(f"**{x.get('topic','')}** · {x.get('keyword','')}")
-        st.caption(f"검색의도: {x.get('search_intent','')} · {x.get('reason','')}")
-    st.markdown("**자기잠식 주의**")
-    st.write(analysis.get("cannibalization_note", "-"))
-    if not has_specific_asset:
-        st.caption("내 블로그 전체 자동 검색은 V2.3에서 제거했습니다. 기존글과 비교하려면 사이드바의 '특정 기존글 URL(선택)'에 원하는 글만 입력하세요.")
-    st.markdown('</div>', unsafe_allow_html=True)
+        asset_head = "ℹ️ 특정 기존글 URL이 입력되지 않았습니다."
+        asset_detail = "<p>기존글 비교는 선택사항입니다.</p>"
+    strengths = "".join(f"<li>{html_escape(str(x))}</li>" for x in (analysis.get("existing_content_strengths", []) or [])) or "<li>-</li>"
+    extensions = "".join(f"<li>🆕 {html_escape(str(x))}</li>" for x in (analysis.get("current_time_extension_points", []) or [])) or "<li>-</li>"
+    opportunities = "".join(f"<li><b>{html_escape(str(x.get('topic','')))}</b> · {html_escape(str(x.get('keyword','')))}</li>" for x in (analysis.get("new_content_opportunities", []) or [])) or "<li>-</li>"
+    card6 = html_card("📚 6. 내 기존글", asset_detail + f"<div class='small'>{asset_head}</div><h5>기존 콘텐츠 자산</h5><p>{html_escape(str(analysis.get('existing_content_asset_summary','-')))}</p><h5>현재 키워드와의 연결성</h5><p>{html_escape(str(analysis.get('existing_content_relevance','-')))}</p><h5>기존 글의 강점</h5><ul>{strengths}</ul><h5>확장 포인트</h5><ul>{extensions}</ul><h5>추천 신규 콘텐츠 기회</h5><ul>{opportunities}</ul><h5>자기잠식 주의</h5><p>{html_escape(str(analysis.get('cannibalization_note','-')))}</p><div class='small'>내 블로그 전체 자동 검색은 하지 않습니다. 비교하려면 사이드바의 특정 기존글 URL을 지정하세요.</div>")
 
-    st.markdown('<div class="analysis-section-title">🏠 5. 홈판 전략</div>', unsafe_allow_html=True)
-    st.markdown('<div class="analysis-box">', unsafe_allow_html=True)
-    st.markdown("**홈판 콘텐츠 각도**")
-    st.write(analysis.get("home_feed_angle", "-"))
-    st.markdown("**적합도**")
-    st.write(f"홈판 적합도 {analysis.get('home_feed_fit_score', 0)}/100 · 검색 적합도 {analysis.get('search_fit_score', 0)}/100")
-    st.markdown("**추천 작성 유형**")
-    st.write(analysis.get("recommended_content_mode", "-"))
-    st.markdown("**추천 이유**")
-    st.write(analysis.get("content_mode_reason", analysis.get("strategy_reason", "-")))
-    st.caption("홈판형은 반전·숫자·의외성·상황·경험을 제목/도입에 활용하고, 본문은 모바일 가독성과 이미지 흐름을 우선합니다.")
-    st.markdown('</div>', unsafe_allow_html=True)
+    # 정확히 2 x 3: 1/2 → 3/4 → 5/6. 내 기존글은 마지막 칸입니다.
+    c1, c2 = st.columns(2)
+    with c1: st.markdown(card1, unsafe_allow_html=True)
+    with c2: st.markdown(card2, unsafe_allow_html=True)
+    c1, c2 = st.columns(2)
+    with c1: st.markdown(card3, unsafe_allow_html=True)
+    with c2: st.markdown(card4, unsafe_allow_html=True)
+    c1, c2 = st.columns(2)
+    with c1: st.markdown(card5, unsafe_allow_html=True)
+    with c2: st.markdown(card6, unsafe_allow_html=True)
 
     st.divider()
     st.subheader("3. 글 작성")
@@ -1246,14 +1395,23 @@ if analysis:
         if not st.session_state.get("selected_title"):
             st.error("글 작성 전에 추천 제목을 하나 선택해 주세요.")
             st.stop()
-        with st.spinner("검색 의도와 콘텐츠 GAP을 반영해 글을 작성하고 있어요..."):
+        if not st.session_state.get("selected_content_mode"):
+            st.error("먼저 검색형·홈판형·혼합형 중 하나를 직접 선택해 주세요.")
+            st.stop()
+        with st.spinner("선택한 유형과 제목에 맞춰 글을 작성하고 있어요..."):
             try:
                 selected_title = st.session_state.get("selected_title", "").strip()
+                selected_mode = st.session_state.get("selected_content_mode")
+                selected_length = {
+                    "HOME_FEED": "공백 제외 1500~2000자",
+                    "SEARCH": "공백 제외 3000자 이상",
+                    "HYBRID": "공백 제외 2500~3500자",
+                }[selected_mode]
                 article = write_with_ai(
                     client,
                     analysis,
-                    {"category": category, "tone": tone, "length": length,
-                     "content_mode": (analysis.get("recommended_content_mode", "SEARCH") if content_mode_request == "AUTO" else content_mode_request),
+                    {"category": category, "tone": tone, "length": selected_length,
+                     "content_mode": selected_mode,
                      "selected_title": selected_title,
                      "selected_title_reason": st.session_state.get("selected_title_reason", "")},
                 )
@@ -1261,7 +1419,7 @@ if analysis:
                 if selected_title:
                     article["seo_title"] = selected_title
                     article["home_title"] = selected_title
-                article["content_mode"] = (analysis.get("recommended_content_mode", "SEARCH") if content_mode_request == "AUTO" else content_mode_request)
+                article["content_mode"] = st.session_state.get("selected_content_mode")
                 article["character_count"] = len(re.sub(r"\s", "", article.get("body_markdown", "")))
                 article["target_length_rule"] = {
                     "HOME_FEED": "공백 제외 1500~2000자",
@@ -1410,4 +1568,4 @@ if article:
         data=json.dumps(output, ensure_ascii=False, indent=2),
         file_name=f"{analysis.get('keyword','keyword')}_content_analysis.json",
         mime="application/json",
-    )
+    ) 
