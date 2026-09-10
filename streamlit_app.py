@@ -199,8 +199,14 @@ def dedupe_search_items(items):
     return out
 
 def current_web_searches(keyword, client_id, client_secret, commercial=False):
-    """시의성이 강한 키워드를 위해 일반 웹검색 외에 공식/최신 검색을 보강합니다."""
-    queries = [f"{keyword} 공식", f"{keyword} 최신"]
+    """시의성이 강한 키워드를 위해 일반/공식/최신 웹검색을 보강합니다."""
+    queries = [
+        f"{keyword} 공식 홈페이지",
+        f"{keyword} 공식",
+        f"{keyword} 최신",
+        f"{keyword} 신청 공식",
+        f"{keyword} 축제 공식",
+    ]
     if commercial:
         queries.append(f"{keyword} 할인 쿠폰")
     merged = []
@@ -211,6 +217,21 @@ def current_web_searches(keyword, client_id, client_secret, commercial=False):
         except Exception:
             continue
     return dedupe_search_items(merged)[:30]
+
+def official_candidate_results(items):
+    """공식 출처 후보를 넓게 추립니다. 최종 공식 여부는 AI가 실제 페이지 내용과 도메인을 함께 검토합니다."""
+    keywords = (
+        'gov.kr', 'go.kr', 'korea.kr', 'mois.go.kr', 'mcst.go.kr', 'tour.go.kr',
+        'visitkorea.or.kr', 'kto.visitkorea.or.kr', 'seoul.go.kr', 'busan.go.kr',
+        'incheon.go.kr', 'daejeon.go.kr', 'daegu.go.kr', 'gwangju.go.kr',
+        'ulsan.go.kr', 'jeju.go.kr', 'or.kr'
+    )
+    out = []
+    for item in items or []:
+        url = (item.get('link') or item.get('originallink') or '').lower()
+        if any(domain in url for domain in keywords):
+            out.append(item)
+    return dedupe_search_items(out)[:15]
 
 def fetch_source_pages(items, limit=5):
     """웹검색 결과 중 상위 후보의 실제 페이지 내용을 짧게 확인합니다.
@@ -253,15 +274,18 @@ ANALYSIS_SCHEMA = {
         "related_keywords": {"type": "ARRAY", "items": {"type": "STRING"}},
         "long_tail_keywords": {"type": "ARRAY", "items": {"type": "STRING"}},
         "title_patterns": {"type": "ARRAY", "items": {"type": "STRING"}},
-        "search_fit_score": {"type": "INTEGER"},
-        "home_feed_fit_score": {"type": "INTEGER"},
-        "hybrid_fit_score": {"type": "INTEGER"},
-        "search_fit_reason": {"type": "STRING"},
-        "home_feed_fit_reason": {"type": "STRING"},
-        "hybrid_fit_reason": {"type": "STRING"},
-        "search_titles": {"type": "ARRAY", "items": {"type": "OBJECT", "properties": {"title": {"type": "STRING"}, "angle": {"type": "STRING"}, "why": {"type": "STRING"}}, "required": ["title", "angle", "why"]}},
-        "home_feed_titles": {"type": "ARRAY", "items": {"type": "OBJECT", "properties": {"title": {"type": "STRING"}, "angle": {"type": "STRING"}, "why": {"type": "STRING"}}, "required": ["title", "angle", "why"]}},
-        "hybrid_titles": {"type": "ARRAY", "items": {"type": "OBJECT", "properties": {"title": {"type": "STRING"}, "angle": {"type": "STRING"}, "why": {"type": "STRING"}}, "required": ["title", "angle", "why"]}},
+        "recommended_titles": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "title": {"type": "STRING"},
+                    "angle": {"type": "STRING"},
+                    "why": {"type": "STRING"}
+                },
+                "required": ["title", "angle", "why"]
+            }
+        },
         "current_source_facts": {
             "type": "ARRAY",
             "items": {
@@ -280,6 +304,24 @@ ANALYSIS_SCHEMA = {
         "freshness_warning": {"type": "STRING"},
         "content_gaps": {"type": "ARRAY", "items": {"type": "STRING"}},
         "home_feed_angle": {"type": "STRING"},
+        "search_fit_score": {"type": "INTEGER"},
+        "home_feed_fit_score": {"type": "INTEGER"},
+        "recommended_content_mode": {"type": "STRING"},
+        "content_mode_reason": {"type": "STRING"},
+        "official_sources": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "name": {"type": "STRING"},
+                    "url": {"type": "STRING"},
+                    "purpose": {"type": "STRING"},
+                    "verified_fact": {"type": "STRING"},
+                    "source_type": {"type": "STRING"}
+                },
+                "required": ["name", "url", "purpose", "verified_fact", "source_type"]
+            }
+        },
         "recommended_strategy": {"type": "STRING"},
         "strategy_reason": {"type": "STRING"},
         "recommended_outline": {"type": "ARRAY", "items": {"type": "STRING"}},
@@ -308,12 +350,10 @@ ANALYSIS_SCHEMA = {
     },
     "required": [
         "search_intent", "competition", "opportunity", "trend_interpretation",
-        "related_keywords", "long_tail_keywords", "title_patterns",
-        "search_fit_score", "home_feed_fit_score", "hybrid_fit_score",
-        "search_fit_reason", "home_feed_fit_reason", "hybrid_fit_reason",
-        "search_titles", "home_feed_titles", "hybrid_titles",
+        "related_keywords", "long_tail_keywords", "title_patterns", "recommended_titles",
         "current_source_facts", "freshness_warning",
-        "content_gaps", "home_feed_angle", "recommended_strategy",
+        "content_gaps", "home_feed_angle", "search_fit_score", "home_feed_fit_score",
+        "recommended_content_mode", "content_mode_reason", "official_sources", "recommended_strategy",
         "strategy_reason", "recommended_outline", "existing_content_asset_summary",
         "existing_content_relevance", "existing_content_strengths",
         "existing_content_missing_or_extendable", "current_time_extension_points",
@@ -325,9 +365,12 @@ ANALYSIS_SCHEMA = {
 ARTICLE_SCHEMA = {
     "type": "OBJECT",
     "properties": {
-        "content_mode": {"type": "STRING"},
         "seo_title": {"type": "STRING"},
         "home_title": {"type": "STRING"},
+        "content_mode": {"type": "STRING"},
+        "content_mode_reason": {"type": "STRING"},
+        "target_length_rule": {"type": "STRING"},
+        "character_count": {"type": "INTEGER"},
         "thumbnail_text": {"type": "STRING"},
         "meta_description": {"type": "STRING"},
         "main_keyword": {"type": "STRING"},
@@ -366,7 +409,7 @@ ARTICLE_SCHEMA = {
                 "type": "OBJECT",
                 "properties": {
                     "image_id": {"type": "INTEGER"},
-                    "position": {"type": "STRING"},
+                    "insert_after": {"type": "STRING"},
                     "role": {"type": "STRING"},
                     "purpose": {"type": "STRING"},
                     "need_score": {"type": "INTEGER"},
@@ -377,19 +420,31 @@ ARTICLE_SCHEMA = {
                     "alt": {"type": "STRING"},
                     "reason": {"type": "STRING"}
                 },
-                "required": ["image_id", "position", "role", "purpose", "need_score", "source", "search_keywords", "orientation", "prompt", "alt", "reason"]
-            }
+                "required": ["image_id", "insert_after", "role", "purpose", "need_score", "source", "search_keywords", "orientation", "prompt", "alt", "reason"],
+            },
         },
         "official_sources": {
             "type": "ARRAY",
-            "items": {"type": "OBJECT", "properties": {"name": {"type": "STRING"}, "url": {"type": "STRING"}, "purpose": {"type": "STRING"}}, "required": ["name", "url", "purpose"]}
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "name": {"type": "STRING"},
+                    "url": {"type": "STRING"},
+                    "purpose": {"type": "STRING"}
+                },
+                "required": ["name", "url", "purpose"]
+            }
         },
+        "coupang_link_needed": {"type": "BOOLEAN"},
+        "coupang_link_reason": {"type": "STRING"},
         "tags": {"type": "ARRAY", "items": {"type": "STRING"}},
     },
     "required": [
-        "content_mode", "seo_title", "home_title", "thumbnail_text", "meta_description",
+        "seo_title", "home_title", "content_mode", "content_mode_reason", "target_length_rule", "character_count",
+        "thumbnail_text", "meta_description",
         "main_keyword", "secondary_keywords", "long_tail_keywords",
-        "outline", "toc_included", "toc_reason", "gap_coverage", "body_markdown", "faq", "image_plan", "official_sources", "tags",
+        "outline", "toc_included", "toc_reason", "gap_coverage", "body_markdown", "faq", "image_plan",
+        "official_sources", "coupang_link_needed", "coupang_link_reason", "tags",
     ],
 }
 
@@ -468,10 +523,17 @@ def analyze_with_ai(client, payload):
 5. 검색 결과 제목만 보고 사실을 확정하지 말고, 제공된 source_pages/current_source_facts에서 근거가 있는 내용만 현재 사실로 취급하세요.
 6. 근거가 부족하면 '현재 확인 필요'로 표시하고 글에 단정적으로 넣지 마세요.
 7. '2026년 9월'처럼 날짜가 중요한 제목은 현재 기준일과 실제 확인된 기간이 맞는 경우에만 사용하세요.
-8. 이 분석 단계에서는 작성 유형을 자동으로 선택하지 마세요. 검색형·홈판형·혼합형 적합도를 각각 0~100점으로 평가하고 이유를 제시하세요. 최종 유형은 사용자가 직접 선택합니다.
-9. 검색형 제목 3개, 홈판형 제목 3개, 혼합형 제목 3개를 각각 만드세요.
-10. 홈판형 제목은 반전·숫자·의외성·상황·경험·호기심을 자연스럽게 조합하되 허위 과장이나 근거 없는 숫자를 사용하지 마세요.
-11. 검색형 제목은 검색 의도와 핵심 키워드를 명확하게 반영하세요.
+8. 추천 제목은 실제로 작성할 글의 방향을 결정하는 단계입니다. 제목과 본문이 서로 다른 주제로 흘러가지 않도록 검색의도와 최신 근거를 반영해 3개를 만드세요.
+9. 검색형은 정보 정확성과 검색 의도 충족을 최우선으로 하고, 홈판형은 클릭을 유도하는 제목·첫 문장·이미지 흐름을 최우선으로 하세요.
+10. 사용자가 요청한 작성 유형이 AUTO면 검색 적합도와 홈판 적합도를 각각 0~100으로 평가하고 추천 유형을 정하세요.
+11. 지원금·정부정책·공공정보·축제 등 공식 확인이 중요한 키워드는 공식 홈페이지 후보를 우선 검토하고, 실제 확인 가능한 URL과 그 페이지에서 가져온 핵심 사실을 official_sources에 남기세요. 공식 URL이 확인되지 않으면 억지로 만들지 마세요.
+12. 쿠팡파트너스 링크는 제품 추천/구매 의도가 실제로 있는 경우에만 필요 여부를 판단하고, 최대 1개 선택사항으로만 표시하세요. 애드센스 유도용 외부 링크는 제안하지 마세요.
+
+홈판 제목 공식:
+- 반전, 숫자, 의외성, 상황, 경험, 궁금증을 조합해 클릭 이유를 만드세요.
+- '직접 해보니', '알고 보니', '의외로', '결국', '생각보다', '다시 한다면' 같은 표현은 주제에 자연스럽게 맞을 때 활용하세요.
+- 과장, 허위, 확인되지 않은 수치·기간·효과를 만들지 마세요.
+- 홈판형 제목 3개를 만들 때 가능하면 서로 다른 클릭 장치를 사용하세요: 반전형 / 숫자형 / 의외성·경험형.
 
 기존 콘텐츠 자산 원칙:
 - 내 블로그 주소/ID는 이 앱에서 내 블로그 전체를 자동 검색하기 위한 값으로 사용하지 않습니다.
@@ -492,10 +554,6 @@ def analyze_with_ai(client, payload):
 - 근거가 없으면 그런 표현을 제목에서 빼세요.
 
 현재 정보 검증:
-- 지원금, 축제, 정부정책, 공공정보, 공공기관 서비스 등은 공식 홈페이지·정부·지자체·공공기관 페이지를 최우선으로 확인하세요.
-- 검색자가 실제로 필요로 하는 정보(대상, 기간, 금액, 신청방법, 장소, 일정, 조건 등)를 공식 페이지에서 확인하고 current_source_facts에 사실과 URL을 남기세요.
-- official_sources에는 글에서 독자가 직접 확인하면 좋은 공식 페이지를 최대 3개까지 정리하세요. 확인되지 않은 URL은 절대 만들지 마세요.
-- 쿠팡파트너스는 제품 추천 글에서만 선택적으로 1개 슬롯을 고려할 수 있으며 필수가 아닙니다. 애드센스 유도용 외부링크는 만들지 마세요.
 - current_source_facts는 '현재 확인된 사실' 후보입니다.
 - source_pages는 실제 웹페이지에서 추출한 참고 내용입니다.
 - current_source_facts에는 최소한 글에 실제로 사용할 가치가 높은 사실만 넣고, source_url을 반드시 남기세요.
@@ -512,44 +570,71 @@ JSON으로만 답하세요.
 def write_with_ai(client, analysis_payload, writing_options):
     selected_title = writing_options.get("selected_title", "").strip()
     prompt = f"""
-당신은 네이버 블로그용 SEO 콘텐츠 작가이자 팩트체크 편집자입니다.
+당신은 네이버 블로그용 SEO 콘텐츠 작가이자 홈판 콘텐츠 편집자, 팩트체크 편집자입니다.
 아래 분석 결과와 '선택된 제목'을 기준으로 실제 발행 가능한 한국어 글을 작성하세요.
 
-가장 중요한 원칙:
-1) 선택된 제목이 글의 계약(약속)입니다. 본문 전체가 그 제목의 검색의도와 약속을 정확히 충족해야 합니다.
-2) 제목에 없는 새로운 주제로 본문이 옆길로 새지 않도록 하세요.
-3) 현재 시점의 할인율, 프로모션 기간, 할인코드, 카드 제휴, 가격, 이벤트명 등은 analysis의 current_source_facts 또는 source_pages에서 근거가 확인된 것만 작성하세요.
-4) 근거가 없는 최신 정보는 절대로 추측하거나 예전 정보로 채우지 마세요. '현재 확인 필요'라고 표시하거나 해당 내용을 제외하세요.
-5) 특히 할인코드/쿠폰 글에서는 오래된 코드나 과거 이벤트를 현재 진행 중인 것처럼 쓰지 마세요.
-6) 공식 사이트가 확인된 경우 공식 출처를 우선합니다. 제3자 블로그의 숫자·코드만으로 현재 사실을 확정하지 마세요.
-7) 글 작성 시 분석 단계에서 확인되지 않은 카드사 제휴, 할인율, 세일 기간, 가격, 코드 등을 추가하지 마세요.
-8) 사용자가 직접 경험했다고 주어지지 않은 내용을 1인칭 체험처럼 쓰지 마세요.
-9) 네이버 모바일 화면을 최우선으로 고려해 짧은 문단과 명확한 소제목을 사용하세요.
-10) 한 문단은 기본 1~2문장, 최대 3문장을 넘기지 마세요.
-11) 문단 사이에는 빈 줄 1줄을 두세요.
-12) 한 문장은 40~60자 안팎을 우선하고 긴 문장은 자연스럽게 나누세요.
-13) 친근한 존댓말(~해요, ~랍니다)을 기본으로 하세요.
-14) 본문은 반드시 자연스러운 서론으로 시작하고 첫 H2/H3보다 서론이 먼저 와야 합니다.
-15) 목차는 반드시 포함하세요. 서론 다음에 "목차"를 넣고 본문 소제목과 동일한 순서로 구성하세요.
-16) 본문의 주요 소제목(H2)은 반드시 "## 1. 소제목", "## 2. 소제목"처럼 번호를 붙이세요. H3를 쓰는 경우에는 "### 1-1. 소제목"처럼 상위 번호와 연결해 번호를 붙이세요.
-17) 분석의 콘텐츠 GAP은 실제 본문에 반영하고 gap_coverage에 기록하세요.
-18) 작성 유형은 사용자가 직접 선택한 값입니다. 다른 유형으로 임의 변경하지 마세요.
-19) 모든 글은 공백 제외 최소 1,500자 이상을 목표로 하세요.
-20) 홈판형은 공백 제외 약 1,500~2,000자로 작성하세요. 첫 문장부터 상황과 후킹을 만들고, 반전·숫자·의외성·경험을 자연스럽게 활용하세요.
-21) 검색형은 공백 제외 3,000자 이상으로 작성하세요. 검색자가 원하는 정보를 빠짐없이 구조화하고 공식 출처가 있는 최신 정보는 그 근거를 우선하세요.
-22) 혼합형은 공백 제외 약 2,500~3,500자를 목표로 하세요.
-23) 홈판형은 본문 흐름에 맞춘 이미지 계획을 최소 5개 이상 만드세요.
-24) 검색형은 필요한 이미지 중심으로 설계하고 개수를 억지로 늘리지 마세요.
-25) 외부 링크는 필수가 아닙니다. 지원금·축제·정부정책·공공정보 등은 확인된 공식 URL을 official_sources에 제공하고, 제품 추천 글에서만 쿠팡파트너스 1개를 선택적으로 고려하세요. 애드센스 유도용 외부링크는 만들지 마세요.
+[작성 유형]
+- requested_mode: {writing_options.get("content_mode", "AUTO")}
+- 목표 분량 규칙: {writing_options.get("length", "최소 1500자")}
+- 선택된 제목: {selected_title}
+
+분량 규칙은 반드시 지키세요.
+1) 모든 글은 공백 제외 약 1500자 이상을 기본 하한으로 합니다.
+2) HOME_FEED는 공백 제외 1500~2000자를 목표로 합니다. 너무 짧거나 2000자를 크게 넘기지 마세요.
+3) SEARCH는 공백 제외 3000자 이상을 목표로 합니다. 검색자가 필요한 정보를 충분히 설명하세요.
+4) HYBRID는 공백 제외 2500~3500자 이상을 목표로 하되 검색 의도와 홈판 가독성의 균형을 맞추세요.
+
+[검색형 작성 규칙]
+- 검색자가 실제로 원하는 답을 빠르게 찾을 수 있도록 작성하세요.
+- 지원금·정부정책·축제·공공정보는 공식 출처에서 확인된 내용을 우선 사용하세요. 신청기간, 대상, 금액, 조건, 방법, 서류, 일정 등은 근거가 확인된 경우에만 단정하세요.
+- 공식 출처 URL은 official_sources에 기록하세요. 본문에 필요하면 '공식 홈페이지에서 확인'처럼 자연스럽게 안내하되 링크를 필수로 본문에 넣지는 마세요.
+- 검색형은 정보 누락을 막기 위해 H2/H3, 표, 체크리스트, FAQ 등을 내용에 맞게 활용하세요.
+
+[홈판 작성 규칙]
+- 제목 → 첫 이미지 → 첫 문장 Hook의 연결을 강하게 만드세요.
+- 첫 문장은 '안녕하세요', '오늘은 ~ 알아볼게요' 같은 일반적인 인사로 시작하지 마세요.
+- 첫 3문장은 상황/공감 → 반전·궁금증 → 이 글에서 얻을 것의 흐름을 우선하세요.
+- 제목은 반전·숫자·의외성·상황·경험을 조합한 클릭 유도형 약속을 지키세요.
+- 본문은 모바일에서 읽기 쉽도록 1~2문장 단락을 기본으로 하세요.
+- 홈판형 image_plan은 최소 5개 슬롯을 설계하세요. 실제로 의미가 없는 이미지를 억지로 추가하지 말고, 각 이미지에 본문상의 역할을 부여하세요.
+- 인용구는 핵심 문장이나 반전 포인트가 실제로 있을 때 초반과 중반에 자연스럽게 배치하세요.
+
+[공통 팩트 규칙]
+1) 선택된 제목이 글의 계약(약속)입니다. 본문 전체가 제목의 검색의도와 약속을 정확히 충족해야 합니다.
+2) 제목에 없는 새로운 주제로 옆길로 새지 마세요.
+3) 현재 시점의 할인율, 프로모션 기간, 할인코드, 카드 제휴, 가격, 이벤트명 등은 current_source_facts 또는 source_pages에서 근거가 확인된 것만 작성하세요.
+4) 근거 없는 최신 정보는 절대로 추측하지 마세요.
+5) 사용자가 직접 경험했다고 주어지지 않은 내용을 1인칭 체험처럼 쓰지 마세요.
+6) 애드센스 페이지로 보내기 위한 외부 링크 전략은 사용하지 마세요.
+7) 쿠팡파트너스는 제품 추천/구매 의도가 있는 경우에만 선택적으로 1개 슬롯을 제안하고, 필수로 넣지 마세요.
+8) 친근한 존댓말(~해요, ~랍니다)을 기본으로 하세요.
+9) 모바일 화면을 우선해 짧은 문단과 명확한 소제목을 사용하세요.
+10) 목차는 모든 글에 포함하고, 서론 뒤에 '## 목차'를 둡니다. 주요 H2는 '## 1. ...', H3는 필요할 때 '### 1-1. ...' 형식으로 번호를 붙이세요.
+11) body_markdown에는 글 제목을 반복하지 마세요.
+12) FAQ는 3~5개입니다.
+
+[이미지 계획]
+- 기본은 실사 사진입니다.
+- image_plan의 각 이미지는 실제 본문 위치를 가리키는 insert_after를 사용하세요.
+- article keyword와 이미지 검색어는 같지 않을 수 있습니다. 본문 장면을 실제로 보여줄 수 있는 영어 Pixabay 검색어를 생성하세요.
+- source는 'user_photo', 'pixabay', 'ai', 'none' 중 하나를 사용하세요.
+- 가능하면 pixabay를 우선 후보로 하고, 적합한 사진이 없으면 ai를 사용하세요.
+- prompt에는 'no text, no typography, no infographic, no watermark'를 포함하세요.
+- alt는 한국어로 작성하세요.
+
+[외부 링크]
+- official_sources는 분석에서 실제 확인된 공식 URL만 전달하세요.
+- coupang_link_needed는 제품 추천 글에서만 true가 될 수 있습니다. URL 자체를 만들지 말고, 사용자가 실제 파트너스 URL을 넣을 수 있도록 슬롯만 남기세요.
 
 카테고리: {writing_options["category"]}
 톤: {writing_options["tone"]}
 목표 분량: {writing_options["length"]}
 메인 키워드: {analysis_payload["keyword"]}
-기존글 비교 전략: {analysis_payload["recommended_strategy"]}
-작성 유형: {writing_options["content_mode"]}
+추천 전략: {analysis_payload["recommended_strategy"]}
 선택된 제목: {selected_title}
 제목 선택 이유/각도: {writing_options.get("selected_title_reason", "")}
+검색 적합도: {analysis_payload.get("search_fit_score", 0)} / 홈판 적합도: {analysis_payload.get("home_feed_fit_score", 0)}
+추천 콘텐츠 유형: {analysis_payload.get("recommended_content_mode", "AUTO")}
 
 [최신 근거 데이터]
 {json.dumps(analysis_payload.get("current_source_facts", []), ensure_ascii=False, indent=2)}
@@ -594,9 +679,7 @@ body_markdown 시작은 2~4개의 서론 문단이어야 합니다.
 본문의 주요 H2는 반드시 "## 1. ...", "## 2. ..."처럼 번호를 붙이고, H3는 필요할 때만 "### 1-1. ..."처럼 번호를 붙이세요.
 toc_included는 반드시 true로 반환하고, toc_reason에는 목차를 포함한 이유를 짧게 적으세요.
 FAQ는 3~5개.
-image_plan은 완성된 본문을 기준으로 실제 제작 가능한 이미지 계획을 작성하세요. 각 이미지에는 정확한 삽입 위치, 역할, 필요도(0~3), source(Pixabay/AI/none), Pixabay 검색어, 방향, ALT, 이유를 포함하세요.
-이미지 검색어는 메인 키워드를 그대로 반복하지 말고 해당 문단의 실제 장면을 검색할 수 있는 영어 검색어로 변환하세요.
-홈판형은 최소 5개의 이미지 계획을 만드세요.
+image_plan은 실제 제작 가능한 이미지 계획을 작성하세요.
 이미지 프롬프트는 영어로 작성하되 이미지 자체에 글자를 생성하도록 요구하지 마세요.
 
 JSON으로만 답하세요.
@@ -624,18 +707,23 @@ def seo_check(article, analysis):
     else:
         gap_label = "콘텐츠 GAP 보완 필요"
         gap_ok = False
-    mode = article.get("content_mode", "")
-    no_space_len = len(re.sub(r"\s+", "", text))
-    length_ok = (no_space_len >= 1500 if mode == "HOME_FEED" else no_space_len >= 3000 if mode == "SEARCH" else no_space_len >= 2500)
-    image_ok = len(article.get("image_plan", [])) >= (5 if mode == "HOME_FEED" else 1)
+    char_count = len(re.sub(r"\s", "", text))
+    mode = article.get("content_mode") or analysis.get("recommended_content_mode") or "SEARCH"
+    if mode == "HOME_FEED":
+        length_ok = 1500 <= char_count <= 2200
+    elif mode == "SEARCH":
+        length_ok = char_count >= 3000
+    elif mode == "HYBRID":
+        length_ok = char_count >= 2500
+    else:
+        length_ok = char_count >= 1500
     checks = {
-        "본문 분량 기준 충족": length_ok,
         "메인 키워드 반영": count >= 2,
         "검색의도 반영": bool(analysis.get("search_intent")),
         gap_label: gap_ok,
-        "서론 포함": bool(re.search(r"(^|\n)\s*(서론|들어가며|먼저|요즘|최근)", text, re.I)) or len(text.strip().split("\n\n")) >= 2,
+        "분량 규칙 충족": length_ok,
         "FAQ 포함": len(article.get("faq", [])) >= 3,
-        "이미지 계획 기준 충족": image_ok,
+        "이미지 계획 포함": len(article.get("image_plan", [])) >= (5 if mode == "HOME_FEED" else 3),
         "홈판 제목 별도 생성": bool(article.get("home_title")),
         "썸네일 문구 생성": bool(article.get("thumbnail_text")),
     }
@@ -804,7 +892,23 @@ with st.sidebar:
     st.divider()
     st.subheader("작성 기본값")
     tone = st.selectbox("말투", ["친근한 정보형", "담백한 정보형", "전문적인 정보형"])
-    st.caption("목표 분량은 선택한 유형에 따라 적용됩니다: 홈판형 1,500~2,000자 / 검색형 3,000자 이상 / 혼합형 2,500~3,500자")
+    content_mode_request = st.selectbox(
+        "작성 유형",
+        ["AUTO", "HOME_FEED", "SEARCH", "HYBRID"],
+        format_func=lambda x: {
+            "AUTO": "AI 추천",
+            "HOME_FEED": "홈판형 (1500~2000자)",
+            "SEARCH": "검색형 (3000자 이상)",
+            "HYBRID": "혼합형 (2500~3500자)"
+        }[x],
+        help="키워드 분석 후 AI가 추천 유형을 제시합니다. 직접 홈판형/검색형으로 고정할 수도 있습니다.",
+    )
+    length = {
+        "HOME_FEED": "공백 제외 1500~2000자",
+        "SEARCH": "공백 제외 3000자 이상",
+        "HYBRID": "공백 제외 2500~3500자",
+        "AUTO": "AI 추천 유형에 맞춰 자동 적용",
+    }[content_mode_request]
 
 # 실제 API 호출에는 세션에 저장된 값을 사용합니다.
 gemini_key = st.session_state.gemini_key
@@ -840,8 +944,6 @@ if "selected_title" not in st.session_state:
     st.session_state.selected_title = ""
 if "selected_title_reason" not in st.session_state:
     st.session_state.selected_title_reason = ""
-if "content_mode" not in st.session_state:
-    st.session_state.content_mode = ""
 
 st.subheader("1. 키워드 입력")
 c1, c2 = st.columns([3, 1])
@@ -890,7 +992,9 @@ if analyze_clicked:
 
             st.write("⑤ 최신·공식 웹문서 보강 검색")
             current_web = current_web_searches(keyword, naver_id, naver_secret, commercial=commercial)
-            source_pages = fetch_source_pages(current_web, limit=5)
+            official_candidates = official_candidate_results(current_web)
+            source_pages = fetch_source_pages(current_web, limit=7)
+            official_source_pages = fetch_source_pages(official_candidates, limit=5)
 
             st.write("⑥ 이미지 검색")
             images = naver_search("image", keyword, naver_id, naver_secret, display=10, sort="sim")
@@ -912,6 +1016,9 @@ if analyze_clicked:
                 shopping, benchmark, specific_post=specific_post, blog_id=blog_id,
                 current_web=current_web, source_pages=source_pages
             )
+            payload["requested_content_mode"] = content_mode_request
+            payload["official_candidate_results"] = compact_results(official_candidates, ["title", "description", "link"])
+            payload["official_source_pages"] = official_source_pages
 
             st.write("⑨ AI 콘텐츠 전략 분석")
             ai = analyze_with_ai(client, payload)
@@ -931,10 +1038,16 @@ if analyze_clicked:
                 payload["cannibalization_note"] = "기존글 URL을 지정하지 않았으므로 특정 기존글과의 자기잠식 비교는 수행하지 않았습니다."
 
             st.session_state.analysis = payload
-            # 작성 유형과 제목은 사용자가 직접 선택합니다. 분석 단계에서 자동 선택하지 않습니다.
-            st.session_state.content_mode = ""
-            st.session_state.selected_title = ""
-            st.session_state.selected_title_reason = ""
+            titles = payload.get("recommended_titles", []) or []
+            # 화면에서는 항상 최대 3개 후보만 제시합니다.
+            payload["recommended_titles"] = titles[:3]
+            titles = payload["recommended_titles"]
+            if titles:
+                st.session_state.selected_title = titles[0].get("title", "")
+                st.session_state.selected_title_reason = titles[0].get("why", "")
+            else:
+                st.session_state.selected_title = ""
+                st.session_state.selected_title_reason = ""
             st.session_state.article = None
             status.update(label="분석 완료", state="complete")
         except Exception as e:
@@ -971,6 +1084,9 @@ if analysis:
         _row("관심도 추이", direction) +
         _row("콘텐츠 기회", opportunity) +
         _row("검색 의도", analysis.get("search_intent", "-")) +
+        _row("검색 적합도", f"{analysis.get('search_fit_score', 0)}/100") +
+        _row("홈판 적합도", f"{analysis.get('home_feed_fit_score', 0)}/100") +
+        _row("추천 작성 유형", analysis.get("recommended_content_mode", "-")) +
         _row("내 기존 관련글", f"{own_count}개") +
         '</div>',
         unsafe_allow_html=True,
@@ -988,27 +1104,13 @@ if analysis:
     st.info(f"추천 콘텐츠 전략: **{strategy_labels.get(strategy, strategy)}")
     st.write(analysis.get("strategy_reason", ""))
 
-    st.markdown("### 🎯 콘텐츠 유형 적합도")
-    st.caption("AI는 적합도와 이유만 분석합니다. 작성 유형은 자동으로 결정하지 않으며 아래에서 직접 선택합니다.")
-    for label, score_key, reason_key in [
-        ("🔎 검색형", "search_fit_score", "search_fit_reason"),
-        ("🏠 홈판형", "home_feed_fit_score", "home_feed_fit_reason"),
-        ("🔄 혼합형", "hybrid_fit_score", "hybrid_fit_reason"),
-    ]:
-        st.markdown(f"**{label} · {analysis.get(score_key, 0)}점**")
-        st.caption(analysis.get(reason_key, "-"))
-
-    mode_options = {"🔎 검색형": "SEARCH", "🏠 홈판형": "HOME_FEED", "🔄 혼합형": "HYBRID"}
-    mode_label = st.selectbox("✍️ 실제 작성할 글 유형을 선택하세요", ["선택하세요"] + list(mode_options.keys()), index=0, key="content_mode_select")
-    selected_mode = mode_options.get(mode_label, "")
-    st.session_state.content_mode = selected_mode
-
-    if selected_mode:
-        title_options = {"SEARCH": analysis.get("search_titles", []), "HOME_FEED": analysis.get("home_feed_titles", []), "HYBRID": analysis.get("hybrid_titles", [])}.get(selected_mode, [])[:3]
-        st.markdown("### 🎯 선택한 유형의 추천 제목 3가지")
+    st.markdown("### 🎯 글 작성용 추천 제목 3가지")
+    st.caption("제목 패턴만 보고 글을 쓰지 않고, 아래에서 실제 작성할 제목을 하나 선택합니다. 선택한 제목이 글의 핵심 방향이 됩니다.")
+    title_options = analysis.get("recommended_titles", []) or []
+    if title_options:
         labels = [x.get("title", "").strip() for x in title_options if x.get("title", "").strip()]
         if labels:
-            current = st.session_state.get("selected_title", "")
+            current = st.session_state.get("selected_title", labels[0])
             if current not in labels:
                 current = labels[0]
             selected = st.radio("작성할 제목 선택", labels, index=labels.index(current), key="selected_title_radio")
@@ -1018,9 +1120,9 @@ if analysis:
             if selected_obj.get("angle"):
                 st.caption(f"선택 제목의 작성 각도: {selected_obj.get('angle')}")
         else:
-            st.warning("선택한 유형의 추천 제목이 없습니다.")
+            st.warning("추천 제목을 생성하지 못했습니다. 제목 패턴을 참고해 직접 제목을 선택해 주세요.")
     else:
-        st.info("먼저 실제 작성할 유형을 직접 선택해 주세요. AI가 자동으로 선택하지 않습니다.")
+        st.warning("추천 제목이 없습니다. 제목 패턴을 참고해 직접 제목을 선택해 주세요.")
 
     if analysis.get("freshness_warning"):
         st.warning("⚠️ 최신 정보 확인: " + analysis.get("freshness_warning"))
@@ -1033,15 +1135,20 @@ if analysis:
                     st.write(fact.get("source_url"))
 
     if analysis.get("official_sources"):
-        st.markdown("### 🔗 공식 홈페이지 / 공식 출처")
-        st.caption("지원금·축제·정부정책·공공정보 등에서 확인한 공식 페이지입니다. 최종 발행 전 한 번 더 확인해 주세요.")
+        st.markdown("### 🔗 확인된 공식 출처")
+        st.caption("지원금·정부정책·축제·공공정보 등에서 확인된 공식 페이지입니다. 최종 발행 전 직접 한 번 더 확인해 주세요.")
         for src in analysis.get("official_sources", []):
-            st.markdown(f"**{src.get('name','공식 페이지')}** — {src.get('purpose','')}")
+            name = src.get("name", "공식 페이지")
             url = src.get("url", "")
-            if url.startswith(("http://", "https://")):
-                st.link_button("공식 페이지 확인", url)
-            elif url:
-                st.write(url)
+            purpose = src.get("purpose", "")
+            fact = src.get("verified_fact", "")
+            st.markdown(f"**{name}**")
+            if url:
+                st.code(url, language=None)
+            if purpose:
+                st.caption(purpose)
+            if fact:
+                st.write(f"확인 내용: {fact}")
 
     tabs = st.tabs(["🔑 키워드", "📊 경쟁 콘텐츠", "🧩 콘텐츠 GAP", "📚 내 기존글", "🏠 홈판 전략"])
 
@@ -1095,43 +1202,51 @@ if analysis:
         st.markdown("### 자기잠식 주의")
         st.write(analysis.get("cannibalization_note", "-"))
         if not has_specific_asset:
-            st.caption("내 블로그 전체 자동 검색은 V2.4에서 제거했습니다. 기존글과 비교하려면 사이드바의 '특정 기존글 URL(선택)'에 원하는 글만 입력하세요.")
+            st.caption("내 블로그 전체 자동 검색은 V2.3에서 제거했습니다. 기존글과 비교하려면 사이드바의 '특정 기존글 URL(선택)'에 원하는 글만 입력하세요.")
 
     with tabs[4]:
         st.markdown("### 홈판 콘텐츠 각도")
         st.write(analysis.get("home_feed_angle", "-"))
+        st.markdown("### 적합도")
+        st.write(f"홈판 적합도 {analysis.get('home_feed_fit_score', 0)}/100 · 검색 적합도 {analysis.get('search_fit_score', 0)}/100")
+        st.markdown("### 추천 작성 유형")
+        st.write(analysis.get("recommended_content_mode", "-"))
         st.markdown("### 추천 이유")
-        st.write(analysis.get("strategy_reason", "-"))
+        st.write(analysis.get("content_mode_reason", analysis.get("strategy_reason", "-")))
+        st.caption("홈판형은 반전·숫자·의외성·상황·경험을 제목/도입에 활용하고, 본문은 모바일 가독성과 이미지 흐름을 우선합니다.")
 
     st.divider()
     st.subheader("3. 글 작성")
-    selected_mode = st.session_state.get("content_mode", "")
-    mode_lengths = {"HOME_FEED": "공백 제외 약 1,500~2,000자", "SEARCH": "공백 제외 3,000자 이상", "HYBRID": "공백 제외 약 2,500~3,500자"}
-    if not selected_mode:
-        st.warning("먼저 검색형·홈판형·혼합형 중 작성 유형을 직접 선택해 주세요.")
-    elif not st.session_state.get("selected_title"):
-        st.warning("선택한 유형의 추천 제목 중 하나를 선택해 주세요.")
-    if st.button("✍️ 선택한 유형과 제목으로 글 작성", type="primary", use_container_width=True):
-        if not selected_mode:
-            st.error("글 작성 전에 작성 유형을 직접 선택해 주세요.")
-            st.stop()
+    if not st.session_state.get("selected_title"):
+        st.warning("먼저 글 작성에 사용할 추천 제목을 하나 선택해 주세요.")
+    if st.button("✍️ 선택한 제목으로 글 작성", type="primary", use_container_width=True):
         if not st.session_state.get("selected_title"):
             st.error("글 작성 전에 추천 제목을 하나 선택해 주세요.")
             st.stop()
-        with st.spinner("선택한 작성 유형과 콘텐츠 GAP을 반영해 글을 작성하고 있어요..."):
+        with st.spinner("검색 의도와 콘텐츠 GAP을 반영해 글을 작성하고 있어요..."):
             try:
                 selected_title = st.session_state.get("selected_title", "").strip()
                 article = write_with_ai(
                     client,
                     analysis,
-                    {"category": category, "tone": tone, "length": mode_lengths[selected_mode],
-                     "content_mode": selected_mode,
+                    {"category": category, "tone": tone, "length": length,
+                     "content_mode": (analysis.get("recommended_content_mode", "SEARCH") if content_mode_request == "AUTO" else content_mode_request),
                      "selected_title": selected_title,
                      "selected_title_reason": st.session_state.get("selected_title_reason", "")},
                 )
-                article["content_mode"] = selected_mode
+                # 사용자가 선택한 제목을 실제 발행 제목으로 고정합니다.
                 if selected_title:
                     article["seo_title"] = selected_title
+                    article["home_title"] = selected_title
+                article["content_mode"] = (analysis.get("recommended_content_mode", "SEARCH") if content_mode_request == "AUTO" else content_mode_request)
+                article["character_count"] = len(re.sub(r"\s", "", article.get("body_markdown", "")))
+                article["target_length_rule"] = {
+                    "HOME_FEED": "공백 제외 1500~2000자",
+                    "SEARCH": "공백 제외 3000자 이상",
+                    "HYBRID": "공백 제외 2500~3500자",
+                }.get(article["content_mode"], "공백 제외 1500자 이상")
+                if not article.get("official_sources"):
+                    article["official_sources"] = analysis.get("official_sources", []) or []
                 st.session_state.article = article
             except Exception as e:
                 st.error(f"글 작성 중 오류가 발생했습니다: {e}")
@@ -1141,8 +1256,9 @@ article = st.session_state.article
 if article:
     st.divider()
     st.subheader("4. 최종 콘텐츠")
-    mode_label_final = {"SEARCH": "🔎 검색형", "HOME_FEED": "🏠 홈판형", "HYBRID": "🔄 혼합형"}.get(article.get("content_mode"), "-")
-    st.info(f"작성 유형: **{mode_label_final}**")
+
+    st.markdown("### 🧭 작성 유형")
+    st.info(f"{article.get('content_mode', analysis.get('recommended_content_mode', 'SEARCH'))} · {article.get('target_length_rule', length)} · 공백 제외 {article.get('character_count', len(re.sub(r'\s', '', article.get('body_markdown', '')))):,}자")
 
     a, b = st.columns(2)
     with a:
@@ -1190,7 +1306,16 @@ if article:
             if a:
                 faq_lines.append(a)
             faq_lines.append("")
-        smart_text = smart_text.rstrip() + "\n" + "\n".join(faq_lines).rstrip() + "\n"
+        faq_block = "\n" + "\n".join(faq_lines).rstrip() + "\n"
+        # FAQ는 결론 뒤에 붙이지 않고, 결론 직전에 배치합니다.
+        # 본문에 번호가 붙은 '결론' H2가 있으면 해당 H2 앞에 삽입하고,
+        # 결론을 찾지 못하면 본문 마지막에 안전하게 추가합니다.
+        conclusion_pattern = re.compile(r"(?m)^##\s+(?:\d+\.\s*)?결론\b[^\n]*")
+        match = conclusion_pattern.search(smart_text)
+        if match:
+            smart_text = smart_text[:match.start()].rstrip() + faq_block + "\n" + smart_text[match.start():].lstrip()
+        else:
+            smart_text = smart_text.rstrip() + faq_block
 
     # 모바일 가독성용 최소 정리: 과도한 연속 빈 줄만 정리합니다.
     smart_text = re.sub(r"\n{3,}", "\n\n", smart_text).strip() + "\n"
@@ -1216,22 +1341,29 @@ if article:
                 st.write(item.get("answer", ""))
 
     st.markdown("### 이미지 삽입 계획")
-    if article.get("content_mode") == "HOME_FEED":
-        st.caption("홈판형은 본문 흐름에 맞춰 최소 5개 이미지 슬롯을 설계합니다.")
-    else:
-        st.caption("본문 내용에 실제로 필요한 이미지만 설계합니다.")
-    for i, item in enumerate(article.get("image_plan", []), 1):
-        st.markdown(f"**{i}. {item.get('position','')} — {item.get('role','')} — 필요도 {item.get('need_score', 0)}**")
-        st.write(f"목적: {item.get('purpose','')}")
-        st.write(f"소스: {item.get('source','')} · 방향: {item.get('orientation','')}")
+    image_plan = article.get("image_plan", []) or []
+    if article.get("content_mode") == "HOME_FEED" and len(image_plan) < 5:
+        st.warning(f"홈판형 이미지 계획이 {len(image_plan)}개입니다. 목표는 최소 5개 슬롯입니다.")
+    st.caption("본문을 먼저 분석한 뒤 이미지 역할·삽입 위치·Pixabay 검색어·AI 프롬프트를 함께 설계합니다. 홈판형은 최소 5개 슬롯을 목표로 합니다.")
+    for i, item in enumerate(image_plan, 1):
+        st.markdown(f"**{i}. 이미지 {item.get('image_id', i)} · {item.get('insert_after', item.get('position',''))}**")
+        st.write(f"역할: {item.get('role','-')} · 필요도: {item.get('need_score','-')}/3 · 출처: {item.get('source','-')}")
+        st.write(f"목적: {item.get('purpose','-')}")
         if item.get('search_keywords'):
-            st.write("Pixabay 검색어: " + ", ".join(item.get('search_keywords', [])))
-        if item.get('alt'):
-            st.write("ALT: " + item.get('alt'))
-        if item.get('reason'):
-            st.caption(item.get('reason'))
+            st.caption("Pixabay 검색어: " + ", ".join(item.get('search_keywords', [])))
+        st.caption("ALT: " + item.get('alt', '-'))
         if item.get('prompt'):
             st.code(item.get("prompt", ""), language=None)
+
+    st.markdown("### 🔗 공식 출처 / 제휴 링크")
+    for src in article.get("official_sources", []) or analysis.get("official_sources", []):
+        if src.get("url"):
+            st.code(src.get("url"), language=None)
+    if article.get("coupang_link_needed"):
+        st.info("제품 추천 글이라 쿠팡파트너스 링크 1개 슬롯을 선택적으로 사용할 수 있습니다. 실제 파트너스 URL은 사용자가 확인 후 직접 입력하세요.")
+        st.caption(article.get("coupang_link_reason", "제품 구매 의도 때문에 선택적으로 제안된 슬롯입니다."))
+    else:
+        st.caption("이 글에는 쿠팡파트너스 링크가 필수가 아닙니다.")
 
     st.markdown("### 태그")
     st.code(", ".join(article.get("tags", [])), language=None)
