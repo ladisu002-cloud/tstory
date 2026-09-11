@@ -277,14 +277,43 @@ def dedupe_search_items(items):
     return out
 
 def current_web_searches(keyword, client_id, client_secret, commercial=False):
-    """시의성이 강한 키워드를 위해 일반/공식/최신 웹검색을 보강합니다."""
-    queries = [
+    """시의성이 강한 키워드를 위해 일반 검색과 주제별 공식 출처 검색을 보강합니다."""
+    base_queries = [
         f"{keyword} 공식 홈페이지",
         f"{keyword} 공식",
         f"{keyword} 최신",
-        f"{keyword} 신청 공식",
-        f"{keyword} 축제 공식",
     ]
+    k = keyword.lower()
+    support_terms = (
+        "지원금", "지원", "환급", "급여", "수당", "보조금", "정책", "복지",
+        "신청", "본인부담상한", "장려금", "바우처", "자립", "청년", "출산", "육아",
+        "정부", "국민건강보험", "건강보험"
+    )
+    festival_terms = ("축제", "페스티벌", "공연", "콘서트", "라인업", "행사", "예매")
+
+    if any(term in k for term in support_terms):
+        queries = base_queries + [
+            f"{keyword} 보건복지부 공식",
+            f"{keyword} 정부24 공식",
+            f"{keyword} 복지로 공식",
+            f"{keyword} 국민건강보험공단 공식",
+            f"{keyword} 국가법령정보센터 공식",
+            f"{keyword} 국회 의안정보시스템 공식",
+            f"{keyword} 기획재정부 공식",
+        ]
+    elif any(term in k for term in festival_terms):
+        queries = base_queries + [
+            f"{keyword} 문화체육관광부 공식",
+            f"{keyword} 지자체 공식",
+            f"{keyword} 주최측 공식",
+            f"{keyword} 예매처 공식",
+            f"{keyword} 일정 장소 티켓 공식",
+        ]
+    else:
+        queries = base_queries + [
+            f"{keyword} 신청 공식",
+            f"{keyword} 축제 공식",
+        ]
     if commercial:
         queries.append(f"{keyword} 할인 쿠폰")
     merged = []
@@ -300,7 +329,7 @@ def official_candidate_results(items):
     """공식 출처 후보를 넓게 추립니다. 최종 공식 여부는 AI가 실제 페이지 내용과 도메인을 함께 검토합니다."""
     keywords = (
         'gov.kr', 'go.kr', 'korea.kr', 'mois.go.kr', 'mcst.go.kr', 'tour.go.kr',
-        'visitkorea.or.kr', 'kto.visitkorea.or.kr', 'seoul.go.kr', 'busan.go.kr',
+        'visitkorea.or.kr', 'kto.visitkorea.or.kr', 'mohw.go.kr', 'bokjiro.go.kr', 'gov24.go.kr', 'nhis.or.kr', 'law.go.kr', 'assembly.go.kr', 'likms.assembly.go.kr', 'moef.go.kr', 'korea.kr', 'seoul.go.kr', 'busan.go.kr',
         'incheon.go.kr', 'daejeon.go.kr', 'daegu.go.kr', 'gwangju.go.kr',
         'ulsan.go.kr', 'jeju.go.kr', 'or.kr'
     )
@@ -592,8 +621,11 @@ def analyze_with_ai(client, payload):
 8. 검색형과 홈판형의 적합도를 각각 0~100으로 평가하세요. 이 점수는 사용자에게 선택권을 주기 위한 참고값이며, AI가 작성 유형을 자동 선택해서는 안 됩니다.
 9. 검색형은 정보 정확성과 검색 의도 충족을 최우선으로 하고, 홈판형은 클릭을 유도하는 제목·첫 문장·이미지 흐름을 최우선으로 하세요.
 10. 추천 작성 유형을 계산하더라도 UI에서 자동 선택하거나 글 작성 유형으로 확정하지 마세요.
-11. 지원금·정부정책·공공정보·축제 등 공식 확인이 중요한 키워드는 공식 홈페이지 후보를 우선 검토하고, 실제 확인 가능한 URL과 그 페이지에서 가져온 핵심 사실을 official_sources에 남기세요. 공식 URL이 확인되지 않으면 억지로 만들지 마세요.
-12. 쿠팡파트너스 링크는 제품 추천/구매 의도가 실제로 있는 경우에만 필요 여부를 판단하고, 최대 1개 선택사항으로만 표시하세요. 애드센스 유도용 외부 링크는 제안하지 마세요.
+11. 지원금·정부정책·환급·복지·공공서비스·축제·공공정보처럼 공식 확인이 중요한 키워드는 반드시 공식 출처를 먼저 검토하세요. 보건복지부·정부24·복지로·국민건강보험공단·국가법령정보센터·국회·기획재정부·문화체육관광부·지자체·공식 주최/예매처 등 실제 관련 기관의 페이지가 있으면 뉴스·블로그보다 우선합니다.
+12. 공식 페이지에서 확인한 핵심 수치·대상·소득기준·지원금액·부담금/매칭금액·기간·신청방법·필요서류·지급/환급 시점·예외조건 등은 current_source_facts에 빠뜨리지 말고 각각 source_url과 source_type을 붙이세요. 서로 다른 출처의 내용이 다르면 임의로 합치지 말고 차이를 freshness_warning 또는 fact의 설명에 표시하세요.
+13. 출처에 있는 중요한 내용이 글에서 빠지지 않도록 '반드시 본문에 반영할 사실'과 '참고만 할 사실'을 구분하세요. 특히 지원금·환급·정책 글은 독자가 실제로 궁금해할 자격조건→금액→신청방법→지급/환급→주의사항 순서로 빠진 핵심 사실이 없는지 점검하세요.
+14. 정부 발표/정부안/법안/시행 중/검토 중인 제도는 동일하게 확정 사실처럼 쓰지 마세요. source_type에 'CONFIRMED', 'ANNOUNCED', 'GOVERNMENT_PROPOSAL', 'BILL', 'UNDER_REVIEW', 'UNVERIFIED' 중 하나를 사용하세요.
+15. 쿠팡파트너스 링크는 제품 추천/구매 의도가 실제로 있는 경우에만 필요 여부를 판단하고, 최대 1개 선택사항으로만 표시하세요. 애드센스 유도용 외부 링크는 제안하지 마세요.
 
 홈판 제목 공식:
 - 반전, 숫자, 의외성, 상황, 경험, 궁금증을 조합해 클릭 이유를 만드세요.
@@ -724,7 +756,9 @@ def write_with_ai(client, analysis_payload, writing_options):
 3) 현재 시점의 할인율, 프로모션 기간, 할인코드, 카드 제휴, 가격, 이벤트명 등은 current_source_facts 또는 source_pages에서 근거가 확인된 것만 작성하세요.
 4) 근거 없는 최신 정보는 절대로 추측하지 마세요.
 5) 사용자가 직접 경험했다고 주어지지 않은 내용을 1인칭 체험처럼 쓰지 마세요.
-6) 애드센스 페이지로 보내기 위한 외부 링크 전략은 사용하지 마세요.
+6) 아래에 [직접 경험]이 제공된 경우에만 해당 내용을 1인칭 경험담으로 자연스럽게 활용하세요. 경험에 포함되지 않은 날짜·금액·처리기간·신청과정·감정·결과를 임의로 추가하지 마세요.
+7) 직접 경험은 공식 정책/뉴스 사실과 구분하세요. '제가 실제로 해보니' 같은 표현은 사용자 경험에만 사용하고, 제도 자체의 조건·금액·대상 등은 공식 근거가 있는 경우에만 단정하세요.
+8) 애드센스 페이지로 보내기 위한 외부 링크 전략은 사용하지 마세요.
 7) 쿠팡파트너스는 제품 추천/구매 의도가 있는 경우에만 선택적으로 1개 슬롯을 제안하고, 필수로 넣지 마세요.
 8) 친근한 존댓말(~해요, ~랍니다)을 기본으로 하세요.
 9) 모바일 화면을 우선해 짧은 문단과 명확한 소제목을 사용하세요.
@@ -752,6 +786,19 @@ def write_with_ai(client, analysis_payload, writing_options):
 추천 전략: {analysis_payload["recommended_strategy"]}
 선택된 제목: {selected_title}
 제목 선택 이유/각도: {writing_options.get("selected_title_reason", "")}
+직접 경험 사용 여부: {"사용" if writing_options.get("direct_experience_enabled") else "사용 안 함"}
+
+[직접 경험]
+{writing_options.get("direct_experience_text", "").strip() or "제공되지 않음. 사용자의 개인 경험을 임의로 만들어 1인칭으로 작성하지 마세요."}
+
+직접 경험 반영 규칙:
+- 직접 경험 사용 여부가 '사용'이고 내용이 제공된 경우, 글의 검색 의도를 해치지 않는 위치에 실제 경험을 차별화 요소로 넣으세요.
+- '제가 직접 신청해보니', '실제로 해보니', '저는 이렇게 했어요', '입금까지는 실제로 이 정도 걸렸어요'처럼 자연스러운 1인칭 표현을 사용할 수 있습니다.
+- 단, 입력된 경험에 없는 날짜·금액·처리기간·서류·신청경로·감정·결과는 절대 만들어내지 마세요.
+- 공식 제도 설명과 개인 경험을 문장상 구분하세요. 개인 경험 하나를 일반적인 제도 규칙으로 확대 해석하지 마세요.
+- 사용자가 경험한 신청/구매/방문/사용 과정에서 '실제로 해보니 알게 된 점', '생각보다 쉬웠던 점', '주의했던 점'처럼 독자에게 도움이 되는 경험 정보를 우선 살리세요.
+- 경험 내용이 짧으면 억지로 분량을 늘리지 말고, 제공된 사실 범위 안에서만 자연스럽게 배치하세요.
+
 검색 적합도: {analysis_payload.get("search_fit_score", 0)} / 홈판 적합도: {analysis_payload.get("home_feed_fit_score", 0)}
 추천 콘텐츠 유형: {analysis_payload.get("recommended_content_mode", "AUTO")}
 
@@ -1391,6 +1438,29 @@ if analysis:
 
     st.divider()
     st.subheader("3. 글 작성")
+
+    # 사용자가 실제로 겪은 경험을 선택적으로 글에 반영합니다.
+    # 경험 내용이 제공된 경우에만 1인칭 표현을 허용하고, AI가 임의의 체험을 만들지 않도록 합니다.
+    direct_experience = st.checkbox(
+        "✍️ 직접 경험 추가",
+        key="direct_experience_enabled",
+        help="직접 신청·구매·방문·사용한 경험을 입력하면 해당 내용을 1인칭 경험담으로 자연스럽게 반영합니다. 입력하지 않은 경험은 AI가 만들어내지 않습니다.",
+    )
+    direct_experience_text = ""
+    if direct_experience:
+        direct_experience_text = st.text_area(
+            "직접 경험 내용",
+            key="direct_experience_text",
+            height=180,
+            placeholder=(
+                "예: 이번에 본인부담상한액 초과금 환급 대상이 되어 직접 신청했어요. "
+                "온라인으로 신청했고, 신청 후 며칠 뒤 환급금이 실제로 입금됐어요. "
+                "신청 과정에서 어려웠던 점, 준비한 서류, 실제 걸린 시간 등을 자유롭게 적어주세요.\n\n"
+                "※ 정확한 날짜·금액·신청방법 등 기억나는 내용을 구체적으로 적을수록 좋아요."
+            ),
+        ).strip()
+        st.caption("입력한 경험만 사실로 사용합니다. 날짜·금액·처리기간 등을 입력하지 않았다면 AI가 임의로 만들지 않습니다.")
+
     if not st.session_state.get("selected_title"):
         st.warning("먼저 글 작성에 사용할 추천 제목을 하나 선택해 주세요.")
     if st.button("✍️ 선택한 제목으로 글 작성", type="primary", use_container_width=True):
@@ -1415,7 +1485,9 @@ if analysis:
                     {"category": category, "tone": tone, "length": selected_length,
                      "content_mode": selected_mode,
                      "selected_title": selected_title,
-                     "selected_title_reason": st.session_state.get("selected_title_reason", "")},
+                     "selected_title_reason": st.session_state.get("selected_title_reason", ""),
+                     "direct_experience_enabled": bool(st.session_state.get("direct_experience_enabled", False)),
+                     "direct_experience_text": st.session_state.get("direct_experience_text", "").strip() if st.session_state.get("direct_experience_enabled", False) else ""},
                 )
                 # 사용자가 선택한 제목을 실제 발행 제목으로 고정합니다.
                 if selected_title:
