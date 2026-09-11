@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 st.set_page_config(
-    page_title="네이버 콘텐츠 기회 분석기 V2.4",
+    page_title="네이버 콘텐츠 기회 분석기 V2.4.1",
     page_icon="🔎",
     layout="wide",
 )
@@ -1032,6 +1032,8 @@ naver_secret = st.session_state.naver_secret
 own_blog = st.session_state.own_blog
 
 # 실제 작성 유형은 분석 결과를 본 뒤 사용자가 직접 선택합니다.
+# 톤은 별도 선택 UI 없이 글쓰기 기본값으로 사용합니다.
+tone = "자연스럽고 친근한 존댓말(~해요, ~랍니다)"
 content_mode_request = st.session_state.get("selected_content_mode", "")
 length = {
     "HOME_FEED": "공백 제외 1500~2000자",
@@ -1040,7 +1042,7 @@ length = {
 }.get(content_mode_request, "")
 
 if not gemini_key or not naver_id or not naver_secret:
-    st.title("🔎 네이버 콘텐츠 기회 분석기 V2.4")
+    st.title("🔎 네이버 콘텐츠 기회 분석기 V2.4.1")
     st.info("왼쪽 사이드바에 Gemini API Key와 Naver Client ID / Secret을 입력하면 시작할 수 있어요.")
     st.markdown("""
 ### 이 버전에서 하는 일
