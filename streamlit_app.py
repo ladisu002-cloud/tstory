@@ -533,7 +533,28 @@ def gemini_json(client, prompt, schema, max_tokens=8000, retries=3):
                 ),
             )
             text = (resp.text or "").strip()
-            return json.loads(text)
+            if not text:
+                raise ValueError("Gemini 응답이 비어 있습니다.")
+            # JSON 응답이 일시적으로 잘리거나 코드펜스로 감싸지는 경우를 방어합니다.
+            if text.startswith("```json") and text.endswith("```"):
+                text = text[7:-3].strip()
+            elif text.startswith("```") and text.endswith("```"):
+                text = text[3:-3].strip()
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError as json_error:
+                # 특히 여행글처럼 출력 필드가 많은 요청에서는 간헐적으로 JSON이
+                # 중간에서 잘릴 수 있습니다. 일시적인 파싱 실패는 다음 시도에서
+                # 다시 생성하고, 반복 실패 시 원인을 명확하게 보여줍니다.
+                last_error = json_error
+                if attempt < retries - 1:
+                    time.sleep(1 + attempt)
+                    continue
+                raise RuntimeError(
+                    "Gemini 응답 JSON이 완성되지 않았습니다. "
+                    "글 내용이 너무 길게 생성되었거나 일시적인 응답 잘림이 발생했을 수 있습니다. "
+                    f"원본 오류: {json_error}"
+                ) from json_error
         except Exception as e:
             last_error = e
             message = str(e)
@@ -841,7 +862,7 @@ image_plan은 실제 제작 가능한 이미지 계획을 작성하세요.
 
 JSON으로만 답하세요.
 """
-    return gemini_json(client, prompt, ARTICLE_SCHEMA, 10000)
+    return gemini_json(client, prompt, ARTICLE_SCHEMA, 12000)
 
 
 def seo_check(article, analysis):
