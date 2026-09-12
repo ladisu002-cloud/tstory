@@ -412,7 +412,8 @@ ANALYSIS_SCHEMA = {
         },
         "recommended_new_keywords": {"type": "ARRAY", "items": {"type": "STRING"}},
         "cannibalization_note": {"type": "STRING"},
-        "recommended_source_post": {"type": "STRING"}
+        "recommended_source_post": {"type": "STRING"},
+        "travel_checkpoints": {"type": "ARRAY", "items": {"type": "STRING"}}
     },
     "required": [
         "search_intent", "competition", "opportunity", "trend_interpretation",
@@ -424,7 +425,7 @@ ANALYSIS_SCHEMA = {
         "existing_content_relevance", "existing_content_strengths",
         "existing_content_missing_or_extendable", "current_time_extension_points",
         "new_content_opportunities", "recommended_new_keywords",
-        "cannibalization_note", "recommended_source_post"
+        "cannibalization_note", "recommended_source_post", "travel_checkpoints"
     ],
 }
 
@@ -619,6 +620,14 @@ def analyze_with_ai(client, payload):
 - 제목에 '총정리', '최신', '2026년 9월', '할인코드', '최대 XX%', '특정 카드사' 등의 최신성/수치 표현을 넣을 경우 반드시 제공된 최신 근거가 있어야 합니다.
 - 근거가 없으면 그런 표현을 제목에서 빼세요.
 
+여행 콘텐츠 모드:
+- 입력값 is_travel_content가 true이면 여행 콘텐츠로 분석하세요.
+- 여행 검색자의 실제 선택을 돕는 관점에서 지역/장소/숙소/일정/동선/예산/교통/주차/가족·아이 동반 여부 등 검색 의도를 세분화하세요.
+- 해당 여행 주제에서 독자가 실제로 선택할 때 가장 중요한 '필수 체크 포인트' 3가지를 선정해 travel_checkpoints에 짧게 반환하세요. 예: 동선, 가족 혜택, 대욕장.
+- 여러 장소·숙소를 추천하는 주제라면 단순 나열보다 비교 기준을 먼저 세우고, 그 기준으로 후보를 비교하는 방향을 우선하세요.
+- 여행지/숙소/맛집/쇼핑/일정 등 주제에 따라 필요한 정보 항목은 달라질 수 있으므로 억지로 동일한 틀을 적용하지 마세요.
+- 실제 방문 경험이 입력되지 않았다면 방문한 것처럼 추정하거나 1인칭 체험을 만들지 마세요.
+
 현재 정보 검증:
 - current_source_facts는 '현재 확인된 사실' 후보입니다.
 - source_pages는 실제 웹페이지에서 추출한 참고 내용입니다.
@@ -666,16 +675,19 @@ def generate_titles_for_mode(client, analysis_payload, mode):
 {mode_label}
 
 [규칙]
-- 검색형: 검색 의도와 핵심 키워드를 우선하되, 클릭을 유도할 수 있는 구체적인 정보나 궁금증을 1개만 더하세요. 공백 포함 대략 28~38자를 목표로 하되, 의미가 자연스럽다면 약간 길어져도 괜찮습니다. 핵심 키워드는 가능하면 제목 앞부분에 자연스럽게 배치하세요.
-- 홈판형: 홈피드에서 멈춰 읽게 만드는 것을 최우선으로 하세요. 반전, 숫자, 의외성, 상황, 경험, 궁금증 중 서로 다른 클릭 장치를 사용하고, 핵심 키워드와 클릭 포인트가 함께 보이도록 공백 포함 대략 25~38자를 목표로 하세요. 너무 짧아서 맥락이 사라지는 제목은 만들지 마세요.
-- 혼합형: 검색 의도와 클릭성을 균형 있게 잡으세요. 핵심 키워드 + 검색자가 궁금해할 핵심 정보 또는 강한 클릭 포인트 1개를 결합하고, 공백 포함 대략 30~42자를 목표로 하세요. 검색 키워드와 후킹을 모두 살리되 불필요한 정보를 나열하지 마세요.
-- 모든 유형에서 제목을 무조건 짧게 줄이지 마세요. 핵심 키워드와 클릭 포인트가 자연스럽게 연결된다면 40자 안팎까지 허용하세요. 대신 한 제목에 서로 다른 정보 3개 이상을 넣어 길게 나열하지 마세요.
+- 검색형: 검색 의도와 핵심 키워드가 명확해야 하며, 공백 포함 약 28~38자를 목표로 하세요. 너무 짧아 정보 가치가 사라지지 않도록 핵심 키워드 + 검색 의도 + 클릭 보조 요소 1개 정도를 조합하세요. 핵심 키워드는 가능하면 제목 앞부분에 자연스럽게 배치하세요.
+- 홈판형: 반전, 숫자, 의외성, 상황, 경험, 궁금증 중 서로 다른 클릭 장치를 사용하세요. 공백 포함 약 25~38자를 목표로 하되, 후킹을 억지로 삭제해 짧게 만들지 마세요. 핵심 키워드와 클릭 이유가 함께 읽혀야 합니다.
+- 혼합형: 검색 의도와 클릭성을 균형 있게 잡고 공백 포함 약 30~42자를 목표로 하세요. 핵심 키워드 + 가장 중요한 정보 1개 + 클릭 보조 요소 1개 정도까지만 사용하세요.
+- 모든 유형에서 제목은 한 번에 읽히되, 지나치게 짧게 압축하지 마세요. 한 제목에 검색의도·조회·신청·지급·주의사항 등 여러 정보를 모두 나열하지 말고, 독자가 클릭할 핵심 이유 하나를 남기세요.
 - 제목에 콜론(:), 슬래시(/), 쉼표를 이용해 정보를 여러 개 나열하는 방식을 피하세요. 특히 'A 및 B: C부터 D까지' 같은 긴 나열형 제목을 만들지 마세요.
 - 제목에 '방법', '조회', '대상', '지급일'처럼 검색어를 넣더라도 핵심 의도에 필요한 것만 1~2개 선택하세요.
 - 같은 단어와 핵심 키워드의 불필요한 반복을 피하세요.
 - 확인되지 않은 최신 날짜, 할인율, 코드, 가격, 이벤트는 제목에 넣지 마세요.
 - 제목에서 약속한 내용은 실제 본문으로 작성할 수 있어야 합니다.
 - 정확히 3개를 반환하세요.
+- 여행 콘텐츠 모드가 true이면 지역/여행지/숙소/코스 등 핵심 검색어를 제목 앞쪽에 자연스럽게 두고, 여행자의 상황이나 선택 기준을 한 가지 결합하세요.
+- 여행 제목은 '필수 체크 포인트 3가지', '아이와 간다면', '어디에 숙소를 잡을까?', '이 기준으로 고르면 실패 줄이기'처럼 독자의 선택을 돕는 후킹을 활용할 수 있습니다. 다만 확인되지 않은 실제 경험, 가격, 혜택, 평점, 숫자를 만들어 넣지 마세요.
+- 여행 콘텐츠의 3개 제목은 가능하면 ① 정보/큐레이션형 ② 타겟·혜택형 ③ 동선·선택 기준형으로 서로 다른 각도를 제시하세요.
 
 키워드: {analysis_payload.get("keyword", "")}
 검색 의도: {analysis_payload.get("search_intent", "")}
@@ -721,6 +733,19 @@ def write_with_ai(client, analysis_payload, writing_options):
 - 본문은 모바일에서 읽기 쉽도록 1~2문장 단락을 기본으로 하세요.
 - 홈판형 image_plan은 최소 5개 슬롯을 설계하세요. 실제로 의미가 없는 이미지를 억지로 추가하지 말고, 각 이미지에 본문상의 역할을 부여하세요.
 - 인용구는 핵심 문장이나 반전 포인트가 실제로 있을 때 초반과 중반에 자연스럽게 배치하세요.
+
+[여행 콘텐츠 작성 규칙]
+- is_travel_content가 true이면 20년 차 바이럴 마케팅 전문가이자 네이버 여행 콘텐츠 편집자의 관점으로 작성하세요.
+- 도입부에서는 해당 여행 키워드를 검색하는 사람이 실제로 겪는 고민(숙소 선택, 동선, 예산, 아이 동반, 주차, 이동 피로 등)을 짚고, 이 글에서 무엇을 해결할 수 있는지 빠르게 보여주세요.
+- 도입부 또는 초반에는 주제에 맞는 '3초 요약 꿀팁' 또는 '이 글 하나로 끝내는 핵심 요약' 형태의 짧은 요약 박스를 넣으세요.
+- 숙소/여행지처럼 여러 후보를 비교하는 글이라면, 후보 소개 전에 해당 주제에서 가장 중요한 '필수 체크 포인트 3가지'를 제시하고 그 기준을 뒤의 비교에 실제로 적용하세요. 이 3가지는 travel_checkpoints를 우선 활용하세요.
+- 여러 후보가 있는 경우 한눈에 보는 비교표를 적극 활용하되, 실제 출처에서 확인된 정보만 표에 넣으세요.
+- 후보별 상세 설명은 '한 줄 결론 → 위치/접근성 → 핵심 특징·혜택 → 장점·주의점 → 이런 여행자에게 추천' 순서를 기본으로 하되, 주제에 필요하지 않은 항목은 생략하세요.
+- 중간중간 '어디에 숙소를 잡아야 할까?', '아이와 간다면 무엇을 먼저 볼까?'처럼 검색자의 질문을 해결하는 H3를 활용하세요.
+- 여행 동선, 주차, 방문 시간, 준비물, 예약 전 체크사항 등은 키워드와 실제 확인 가능한 근거에 맞는 경우에만 넣으세요.
+- 마지막에는 '여행 상황별 선택 가이드' 또는 '어떤 여행자에게 어떤 선택이 맞는지'를 짧게 정리하세요.
+- 인포크링크/제휴 CTA는 실제 URL을 임의로 만들지 말고, 필요한 경우 '[인포크링크 삽입 위치]'처럼 사용자가 링크를 넣을 수 있는 자연스러운 슬롯으로 표시하세요.
+- 직접 방문 경험이 제공되지 않았다면 실제 방문한 것처럼 쓰지 마세요. 사용자가 제공한 직접 경험이 있을 때만 1인칭 경험을 활용하세요.
 
 [공통 팩트 규칙]
 1) 선택된 제목이 글의 계약(약속)입니다. 본문 전체가 제목의 검색의도와 약속을 정확히 충족해야 합니다.
@@ -862,11 +887,12 @@ def seo_check(article, analysis):
     score = round(sum(checks.values()) / len(checks) * 100)
     return score, checks, count, gaps, gap_label
 
-def build_analysis_payload(keyword, category, trend, blog, news, web, images, shopping, benchmark, specific_post=None, blog_id="", current_web=None, source_pages=None):
+def build_analysis_payload(keyword, category, trend, blog, news, web, images, shopping, benchmark, specific_post=None, blog_id="", current_web=None, source_pages=None, is_travel_content=False):
     has_specific = bool(specific_post and specific_post.get("status") not in (None, "not_provided"))
     return {
         "keyword": keyword,
         "category": category,
+        "is_travel_content": bool(is_travel_content),
         "trend": trend_summary(trend),
         "blog_results": compact_results(blog.get("items", []), ["title", "description", "bloggername", "bloggerlink", "postdate"]),
         "news_results": compact_results(news.get("items", []), ["title", "description", "originallink", "pubDate"]),
@@ -1098,6 +1124,12 @@ with c1:
 with c2:
     category = st.selectbox("카테고리", CATEGORIES, index=2)
 
+travel_content = st.checkbox(
+    "✈️ 여행글로 작성",
+    value=False,
+    help="여행 키워드라면 여행자 선택 기준·필수 체크포인트·비교표·동선·예약 전 체크사항 중심의 여행 콘텐츠 로직을 추가합니다."
+)
+
 with st.expander("선택 옵션", expanded=False):
     commercial = st.checkbox("상품/구매 의도가 있는 키워드", value=False)
     shopping_category = st.text_input(
@@ -1170,7 +1202,7 @@ if analyze_clicked:
             payload = build_analysis_payload(
                 keyword, category, trend, blog, news, web, images,
                 shopping, benchmark, specific_post=specific_post, blog_id=blog_id,
-                current_web=current_web, source_pages=source_pages
+                current_web=current_web, source_pages=source_pages, is_travel_content=travel_content
             )
             payload["searchad_keyword_data"] = compact_searchad_keywords(searchad_data, limit=50)
             payload["official_candidate_results"] = compact_results(official_candidates, ["title", "description", "link"])
@@ -1254,6 +1286,13 @@ if analysis:
     }
     st.info(f"추천 콘텐츠 전략: **{strategy_labels.get(strategy, strategy)}")
     st.write(analysis.get("strategy_reason", ""))
+
+    if analysis.get("is_travel_content"):
+        checkpoints = analysis.get("travel_checkpoints", []) or []
+        if checkpoints:
+            st.markdown("### ✈️ 이 여행글의 필수 체크 포인트 3가지")
+            for i, item in enumerate(checkpoints[:3], 1):
+                st.markdown(f"**{i}. {item}**")
 
     st.markdown("### ✍️ 글 작성 유형 선택")
     st.caption("적합도는 참고값입니다. 실제 작성 유형은 AI가 자동으로 정하지 않고, 여기에서 직접 선택합니다.")
