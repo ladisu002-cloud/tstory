@@ -1,6 +1,7 @@
 
 import os
 import re
+from datetime import datetime
 import json
 import time
 import base64
@@ -1246,6 +1247,10 @@ if "selected_content_mode" not in st.session_state:
     st.session_state.selected_content_mode = ""
 if "title_options" not in st.session_state:
     st.session_state.title_options = []
+if "article_history" not in st.session_state:
+    st.session_state.article_history = []
+if "selected_history_id" not in st.session_state:
+    st.session_state.selected_history_id = None
 
 st.subheader("1. 키워드 입력")
 c1, c2 = st.columns([3, 1])
@@ -1673,6 +1678,18 @@ if analysis:
                 }.get(article["content_mode"], "공백 제외 1500자 이상")
                 if not article.get("official_sources"):
                     article["official_sources"] = analysis.get("official_sources", []) or []
+
+                # 작성 결과를 이번 앱 세션의 '작성한 글' 보관함에 추가합니다.
+                history_item = dict(article)
+                history_item["history_id"] = datetime.now().strftime("%Y%m%d%H%M%S%f")
+                history_item["created_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+                history_item["source_keyword"] = analysis.get("keyword", "")
+                history_item["category"] = category
+                history_item["content_mode"] = selected_mode
+                st.session_state.article_history = [
+                    history_item, *st.session_state.article_history
+                ][:50]
+                st.session_state.selected_history_id = history_item["history_id"]
                 st.session_state.article = article
             except Exception as e:
                 st.error(f"글 작성 중 오류가 발생했습니다: {e}")
@@ -1717,6 +1734,30 @@ def render_body_with_inline_official_links(body_markdown, inline_links):
     return used
 
 article = st.session_state.article
+
+# 작성한 글 목록: 제목을 클릭하면 해당 글을 다시 열 수 있습니다.
+if st.session_state.get("article_history"):
+    st.divider()
+    st.subheader("📚 작성한 글")
+    st.caption("이번 앱 세션에서 작성한 글입니다. 제목을 클릭하면 내용을 다시 볼 수 있어요.")
+
+    for idx, item in enumerate(st.session_state.article_history):
+        hid = item.get("history_id", str(idx))
+        title = (item.get("seo_title") or item.get("home_title") or "제목 없음").strip()
+        keyword_text = item.get("source_keyword", "")
+        created = item.get("created_at", "")
+        mode_text = item.get("content_mode", "")
+        prefix = "▶ " if hid == st.session_state.get("selected_history_id") else ""
+        label = f"{prefix}{title}"
+        meta = " · ".join(x for x in [created, keyword_text, mode_text] if x)
+        c1, c2 = st.columns([8, 2])
+        with c1:
+            if st.button(label, key=f"history_title_{hid}", use_container_width=True):
+                st.session_state.article = item
+                st.session_state.selected_history_id = hid
+                st.rerun()
+        with c2:
+            st.caption(meta)
 
 if article:
     st.divider()
