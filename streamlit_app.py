@@ -360,6 +360,9 @@ ANALYSIS_SCHEMA = {
     "type": "OBJECT",
     "properties": {
         "search_intent": {"type": "STRING"},
+        "main_keyword": {"type": "STRING"},
+        "main_keyword_source": {"type": "STRING"},
+        "main_keyword_evidence": {"type": "STRING"},
         "competition": {"type": "STRING"},
         "opportunity": {"type": "STRING"},
         "trend_interpretation": {"type": "STRING"},
@@ -441,7 +444,8 @@ ANALYSIS_SCHEMA = {
         "travel_checkpoints": {"type": "ARRAY", "items": {"type": "STRING"}}
     },
     "required": [
-        "search_intent", "competition", "opportunity", "trend_interpretation",
+        "search_intent", "main_keyword", "main_keyword_source", "main_keyword_evidence",
+        "competition", "opportunity", "trend_interpretation",
         "related_keywords", "long_tail_keywords", "title_patterns",
         "current_source_facts", "freshness_warning",
         "content_gaps", "home_feed_angle", "search_fit_score", "home_feed_fit_score",
@@ -654,13 +658,16 @@ def analyze_with_ai(client, payload):
 현재 키워드의 검색 의도뿐 아니라, 글에 넣을 수치·기간·할인율·프로모션·코드·일정처럼 시간이 지나면 바뀌는 정보를 반드시 검증해야 합니다.
 
 핵심 원칙:
-1. 현재 키워드와 네이버 검색 데이터(블로그·검색트렌드·뉴스·웹문서·이미지)를 종합해 콘텐츠 전략을 세우세요.
-2. 시의성이 있는 키워드는 '현재 웹검색 보강 결과'와 실제 페이지 확인 결과를 최우선으로 참고하세요.
-3. 공식 사이트/공식 브랜드 페이지가 확인되면 제3자 블로그보다 우선하세요.
-4. 현재 확인되지 않는 할인율, 프로모션 기간, 할인코드, 카드사 제휴, 가격, 이벤트명은 절대 추측해서 쓰지 마세요.
-5. 검색 결과 제목만 보고 사실을 확정하지 말고, 제공된 source_pages/current_source_facts에서 근거가 있는 내용만 현재 사실로 취급하세요.
-6. 근거가 부족하면 '현재 확인 필요'로 표시하고 글에 단정적으로 넣지 마세요.
-7. '2026년 9월'처럼 날짜가 중요한 제목은 현재 기준일과 실제 확인된 기간이 맞는 경우에만 사용하세요.
+1. 사용자가 입력한 키워드는 Creator Advisor에서 이미 선별한 '원본 키워드'입니다. 이 키워드를 분석의 출발점이자 주제의 중심으로 취급하세요.
+2. 원본 키워드 자체의 네이버 검색 데이터(블로그·검색트렌드·뉴스·웹문서·이미지)를 먼저 분석한 뒤, 그 결과에서 실제로 확인되는 연관 검색어·검색 표현을 찾아 메인키워드를 결정하세요.
+3. 메인키워드는 원칙적으로 사용자가 입력한 원본 키워드를 그대로 사용하세요. 단, 네이버 검색 데이터에서 띄어쓰기/표현 차이가 명확하게 확인되고 그 표현이 실제 검색에 더 적합하다고 판단되는 경우에만 연관 검색어를 메인키워드로 선택하세요. 근거 없이 새로운 키워드를 만들거나 다른 주제로 바꾸지 마세요.
+4. 반환하는 main_keyword는 이후 제목과 본문 전체에서 사용할 '고정 SEO 메인키워드'입니다. 제목 생성 단계에서 다시 임의로 바꾸지 마세요.
+5. 시의성이 있는 키워드는 '현재 웹검색 보강 결과'와 실제 페이지 확인 결과를 최우선으로 참고하세요.
+6. 공식 사이트/공식 브랜드 페이지가 확인되면 제3자 블로그보다 우선하세요.
+7. 현재 확인되지 않는 할인율, 프로모션 기간, 할인코드, 카드사 제휴, 가격, 이벤트명은 절대 추측해서 쓰지 마세요.
+8. 검색 결과 제목만 보고 사실을 확정하지 말고, 제공된 source_pages/current_source_facts에서 근거가 있는 내용만 현재 사실로 취급하세요.
+9. 근거가 부족하면 '현재 확인 필요'로 표시하고 글에 단정적으로 넣지 마세요.
+10. '2026년 9월'처럼 날짜가 중요한 제목은 현재 기준일과 실제 확인된 기간이 맞는 경우에만 사용하세요.
 8. 검색형과 홈판형의 적합도를 각각 0~100으로 평가하세요. 이 점수는 사용자에게 선택권을 주기 위한 참고값이며, AI가 작성 유형을 자동 선택해서는 안 됩니다.
 9. 검색형은 정보 정확성과 검색 의도 충족을 최우선으로 하고, 홈판형은 클릭을 유도하는 제목·첫 문장·이미지 흐름을 최우선으로 하세요.
 10. 추천 작성 유형을 계산하더라도 UI에서 자동 선택하거나 글 작성 유형으로 확정하지 마세요.
@@ -685,6 +692,14 @@ def analyze_with_ai(client, payload):
 - 기존글 URL이 없으면: NEW_KEYWORD
 - 기존글 URL이 있으면 UPDATE_EXISTING / NEW_DERIVED / NEW_UNRELATED / NO_OPPORTUNITY 중 판단
 - 시간 경과에 따른 새 가치(실제 사용 후 평가, 재구매, 현재 추천 기준 등)를 검토하되 입력에 없는 경험은 만들지 마세요.
+
+키워드 산출 규칙:
+- main_keyword: 사용자가 입력한 keyword 또는 실제 네이버 검색 데이터에서 확인된 그 키워드의 연관 검색어 중 하나만 선택하세요.
+- main_keyword_source: 반드시 'INPUT_KEYWORD' 또는 'RELATED_SEARCH' 중 하나로 반환하세요.
+- INPUT_KEYWORD를 선택했다면 main_keyword는 입력 keyword와 동일해야 합니다.
+- RELATED_SEARCH를 선택했다면 related_keywords 또는 실제 검색 결과에서 확인 가능한 표현과 동일해야 하며, 왜 선택했는지 main_keyword_evidence에 근거를 적으세요.
+- related_keywords에는 원본 키워드에서 실제로 파생된 검색 표현을 우선 넣으세요. 단순히 주제가 비슷한 일반 명사를 임의로 넣지 마세요.
+- 메인키워드를 결정한 뒤에는 제목과 본문에서 이 값을 변경하지 않는 것을 전제로 분석하세요.
 
 제목 생성 규칙:
 - 추천 제목은 정확히 3개를 제시하세요.
@@ -760,9 +775,11 @@ def generate_titles_for_mode(client, analysis_payload, mode):
 {mode_label}
 
 [규칙]
-- 검색형: 검색 의도와 핵심 키워드가 명확해야 하며, 공백 포함 약 28~38자를 목표로 하세요. 너무 짧아 정보 가치가 사라지지 않도록 핵심 키워드 + 검색 의도 + 클릭 보조 요소 1개 정도를 조합하세요. 핵심 키워드는 가능하면 제목 앞부분에 자연스럽게 배치하세요.
-- 홈판형: 반전, 숫자, 의외성, 상황, 경험, 궁금증 중 서로 다른 클릭 장치를 사용하세요. 공백 포함 약 25~38자를 목표로 하되, 후킹을 억지로 삭제해 짧게 만들지 마세요. 핵심 키워드와 클릭 이유가 함께 읽혀야 합니다.
-- 혼합형: 검색 의도와 클릭성을 균형 있게 잡고 공백 포함 약 30~42자를 목표로 하세요. 핵심 키워드 + 가장 중요한 정보 1개 + 클릭 보조 요소 1개 정도까지만 사용하세요.
+- 검색형: 검색 의도와 핵심 키워드가 명확해야 하며, 공백 포함 약 28~38자를 목표로 하세요. 너무 짧아 정보 가치가 사라지지 않도록 메인키워드 + 검색 의도 + 클릭 보조 요소 1개 정도를 조합하세요.
+- 홈판형: 반전, 숫자, 의외성, 상황, 경험, 궁금증 중 서로 다른 클릭 장치를 사용하세요. 공백 포함 약 25~38자를 목표로 하되, 후킹을 억지로 삭제해 짧게 만들지 마세요. **메인키워드를 반드시 그대로 포함**하고 그 뒤에 클릭 이유를 붙이세요.
+- 혼합형: 검색 의도와 클릭성을 균형 있게 잡고 공백 포함 약 30~42자를 목표로 하세요. **메인키워드를 반드시 그대로 포함**한 뒤 가장 중요한 정보 1개 + 클릭 보조 요소 1개 정도까지만 사용하세요.
+- **절대 규칙: 추천 제목 3개 모두에 [메인키워드]를 정확히 그대로 포함하세요.** 입력 키워드/메인키워드를 다른 표현으로 바꾸거나 삭제하지 마세요.
+- 제목 생성 전에 메인키워드를 먼저 확정된 문자열로 인식하고, 제목 생성 과정에서 키워드 자체를 새로 선택하지 마세요.
 - 모든 유형에서 제목은 한 번에 읽히되, 지나치게 짧게 압축하지 마세요. 한 제목에 검색의도·조회·신청·지급·주의사항 등 여러 정보를 모두 나열하지 말고, 독자가 클릭할 핵심 이유 하나를 남기세요.
 - 제목에 콜론(:), 슬래시(/), 쉼표를 이용해 정보를 여러 개 나열하는 방식을 피하세요. 특히 'A 및 B: C부터 D까지' 같은 긴 나열형 제목을 만들지 마세요.
 - 제목에 '방법', '조회', '대상', '지급일'처럼 검색어를 넣더라도 핵심 의도에 필요한 것만 1~2개 선택하세요.
@@ -775,7 +792,9 @@ def generate_titles_for_mode(client, analysis_payload, mode):
 - 여행 제목은 '필수 체크 포인트 3가지' 자체를 반복하기보다, 독자가 최종적으로 무엇을 선택할 수 있는지를 보여주는 방향을 우선하세요.
 - 여행 콘텐츠의 3개 제목은 가능하면 ① 후보 추천형 ② 타겟 상황형 ③ 일정·선택 기준형으로 서로 다른 각도를 제시하세요.
 
-키워드: {analysis_payload.get("keyword", "")}
+원본 입력 키워드: {analysis_payload.get("keyword", "")}
+SEO 메인키워드: {analysis_payload.get("main_keyword") or analysis_payload.get("keyword", "")}
+메인키워드 선정 근거: {analysis_payload.get("main_keyword_evidence", "")}
 검색 의도: {analysis_payload.get("search_intent", "")}
 콘텐츠 GAP: {json.dumps(analysis_payload.get("content_gaps", []), ensure_ascii=False)}
 연관 키워드: {json.dumps(analysis_payload.get("related_keywords", []), ensure_ascii=False)}
@@ -786,7 +805,16 @@ def generate_titles_for_mode(client, analysis_payload, mode):
 JSON으로만 답하세요.
 """
     result = gemini_json(client, prompt, TITLE_SCHEMA, 2500)
-    return (result.get("titles", []) or [])[:3]
+    main_keyword = (analysis_payload.get("main_keyword") or analysis_payload.get("keyword") or "").strip()
+    titles = (result.get("titles", []) or [])[:3]
+    # 모델이 규칙을 어겨 메인키워드를 누락시키더라도 제목 단계에서 키워드가 사라지지 않도록 최종 방어선을 둡니다.
+    if main_keyword:
+        for item in titles:
+            title = str(item.get("title", "")).strip()
+            if title and main_keyword not in title:
+                item["title"] = f"{main_keyword} {title}"
+                item["why"] = (str(item.get("why", "")).strip() + " 메인키워드를 제목에 고정했습니다.").strip()
+    return titles
 
 def write_with_ai(client, analysis_payload, writing_options):
     selected_title = writing_options.get("selected_title", "").strip()
@@ -875,7 +903,9 @@ def write_with_ai(client, analysis_payload, writing_options):
 카테고리: {writing_options["category"]}
 톤: {writing_options["tone"]}
 목표 분량: {writing_options["length"]}
-메인 키워드: {analysis_payload["keyword"]}
+원본 입력 키워드: {analysis_payload["keyword"]}
+SEO 메인 키워드: {analysis_payload.get("main_keyword") or analysis_payload["keyword"]}
+메인 키워드 선정 근거: {analysis_payload.get("main_keyword_evidence", "")}
 추천 전략: {analysis_payload["recommended_strategy"]}
 선택된 제목: {selected_title}
 제목 선택 이유/각도: {writing_options.get("selected_title_reason", "")}
@@ -901,6 +931,13 @@ def write_with_ai(client, analysis_payload, writing_options):
 - UPDATE_EXISTING: 기존 글의 핵심 정보를 유지하되 현재 시점에 필요한 내용을 근거와 함께 보강하세요.
 - NEW_DERIVED: 기존 글을 복붙/요약하지 말고 새로운 검색의도와 현재 가치를 중심으로 작성하세요.
 - NEW_UNRELATED: 기존 자산을 억지로 연결하지 말고 새 주제로 작성하세요.
+
+메인키워드 SEO 규칙:
+- SEO 메인 키워드는 반드시 `{analysis_payload.get("main_keyword") or analysis_payload["keyword"]}`입니다. 이를 다른 키워드로 바꾸지 마세요.
+- 선택된 제목에는 SEO 메인키워드가 정확히 포함되어 있어야 합니다.
+- 본문 전체는 이 메인키워드를 중심 주제로 유지하고, 도입부·핵심 본문·필요한 H2/H3·FAQ·결론에 자연스럽게 분산하세요.
+- 키워드를 억지로 반복하지 말고 문맥에 맞게 조사·어미와 함께 자연스럽게 사용하세요. 동일 문장을 반복해 키워드 횟수만 늘리지 마세요.
+- secondary_keywords와 long_tail_keywords는 메인키워드를 대체하는 용도가 아니라 보조 검색어로 사용하세요.
 
 제목 충실도 규칙:
 - 선택된 제목의 핵심 키워드와 약속을 본문 첫 부분부터 일관되게 유지하세요.
@@ -940,8 +977,10 @@ JSON으로만 답하세요.
 
 def seo_check(article, analysis):
     text = article.get("body_markdown", "")
-    keyword = analysis.get("keyword", "")
+    keyword = (article.get("main_keyword") or analysis.get("main_keyword") or analysis.get("keyword", "")).strip()
     count = text.count(keyword) if keyword else 0
+    selected_title = (article.get("seo_title") or article.get("home_title") or "").strip()
+    title_keyword_ok = bool(keyword and keyword in selected_title)
     gaps = article.get("gap_coverage", []) or []
     valid_status = {"반영", "완료", "충분히 반영", "해당 없음", "없음"}
     gap_statuses = [str(x.get("status", "")).strip() for x in gaps]
@@ -969,7 +1008,8 @@ def seo_check(article, analysis):
     else:
         length_ok = char_count >= 1500
     checks = {
-        "메인 키워드 반영": count >= 2,
+        "제목 메인키워드 포함": title_keyword_ok,
+        "본문 메인키워드 반영": count >= 2,
         "검색의도 반영": bool(analysis.get("search_intent")),
         gap_label: gap_ok,
         "분량 규칙 충족": length_ok,
@@ -1306,6 +1346,21 @@ if analyze_clicked:
             ai = analyze_with_ai(client, payload)
             payload.update(ai)
 
+            # Creator Advisor 입력 키워드는 항상 분석의 기준점으로 보존합니다.
+            # AI가 메인키워드를 비워두거나 임의의 새 표현을 만들면 원본 키워드로 복귀합니다.
+            input_keyword = keyword.strip()
+            ai_main = str(payload.get("main_keyword") or "").strip()
+            source = str(payload.get("main_keyword_source") or "").strip()
+            related = [str(x).strip() for x in (payload.get("related_keywords") or []) if str(x).strip()]
+            if not ai_main:
+                payload["main_keyword"] = input_keyword
+                payload["main_keyword_source"] = "INPUT_KEYWORD"
+                payload["main_keyword_evidence"] = "Creator Advisor에서 사용자가 입력한 원본 키워드를 기본 메인키워드로 사용했습니다."
+            elif source == "RELATED_SEARCH" and ai_main not in related:
+                payload["main_keyword"] = input_keyword
+                payload["main_keyword_source"] = "INPUT_KEYWORD"
+                payload["main_keyword_evidence"] = "AI가 선택한 연관 검색어가 분석 결과의 연관 키워드 목록에서 확인되지 않아 원본 입력 키워드로 복귀했습니다."
+
             # 특정 기존글 URL이 없으면 내 블로그 자산 비교를 수행하지 않으므로
             # AI가 임의로 기존글 기반 전략을 선택하지 못하도록 전략을 고정합니다.
             if not specific_existing_url.strip():
@@ -1604,10 +1659,11 @@ if analysis:
                      "direct_experience_enabled": bool(st.session_state.get("direct_experience_enabled", False)),
                      "direct_experience_text": st.session_state.get("direct_experience_text", "").strip() if st.session_state.get("direct_experience_enabled", False) else ""},
                 )
-                # 사용자가 선택한 제목을 실제 발행 제목으로 고정합니다.
+                # 사용자가 선택한 제목과 분석에서 확정한 메인키워드를 실제 발행 데이터에 고정합니다.
                 if selected_title:
                     article["seo_title"] = selected_title
                     article["home_title"] = selected_title
+                article["main_keyword"] = analysis.get("main_keyword") or analysis.get("keyword")
                 article["content_mode"] = st.session_state.get("selected_content_mode")
                 article["character_count"] = len(re.sub(r"\s", "", article.get("body_markdown", "")))
                 article["target_length_rule"] = {
