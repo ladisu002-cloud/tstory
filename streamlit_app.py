@@ -397,9 +397,20 @@ ANALYSIS_SCHEMA = {
                     "url": {"type": "STRING"},
                     "purpose": {"type": "STRING"},
                     "verified_fact": {"type": "STRING"},
-                    "source_type": {"type": "STRING"}
+                    "source_type": {"type": "STRING"},
+                    "actions": {
+                        "type": "ARRAY",
+                        "items": {
+                            "type": "OBJECT",
+                            "properties": {
+                                "label": {"type": "STRING"},
+                                "url": {"type": "STRING"}
+                            },
+                            "required": ["label", "url"]
+                        }
+                    }
                 },
-                "required": ["name", "url", "purpose", "verified_fact", "source_type"]
+                "required": ["name", "url", "purpose", "verified_fact", "source_type", "actions"]
             }
         },
         "recommended_strategy": {"type": "STRING"},
@@ -504,6 +515,20 @@ ARTICLE_SCHEMA = {
                 "required": ["image_id", "insert_after", "role", "purpose", "need_score", "source", "search_keywords", "orientation", "prompt", "alt", "reason"],
             },
         },
+        "inline_official_links": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "link_id": {"type": "STRING"},
+                    "insert_after": {"type": "STRING"},
+                    "label": {"type": "STRING"},
+                    "url": {"type": "STRING"},
+                    "purpose": {"type": "STRING"}
+                },
+                "required": ["link_id", "insert_after", "label", "url", "purpose"]
+            }
+        },
         "official_sources": {
             "type": "ARRAY",
             "items": {
@@ -511,9 +536,20 @@ ARTICLE_SCHEMA = {
                 "properties": {
                     "name": {"type": "STRING"},
                     "url": {"type": "STRING"},
-                    "purpose": {"type": "STRING"}
+                    "purpose": {"type": "STRING"},
+                    "actions": {
+                        "type": "ARRAY",
+                        "items": {
+                            "type": "OBJECT",
+                            "properties": {
+                                "label": {"type": "STRING"},
+                                "url": {"type": "STRING"}
+                            },
+                            "required": ["label", "url"]
+                        }
+                    }
                 },
-                "required": ["name", "url", "purpose"]
+                "required": ["name", "url", "purpose", "actions"]
             }
         },
         "coupang_link_needed": {"type": "BOOLEAN"},
@@ -525,7 +561,7 @@ ARTICLE_SCHEMA = {
         "thumbnail_text", "meta_description",
         "main_keyword", "secondary_keywords", "long_tail_keywords",
         "outline", "toc_included", "toc_reason", "gap_coverage", "body_markdown", "faq", "image_plan",
-        "official_sources", "coupang_link_needed", "coupang_link_reason", "tags",
+        "inline_official_links", "official_sources", "coupang_link_needed", "coupang_link_reason", "tags",
     ],
 }
 
@@ -628,7 +664,9 @@ def analyze_with_ai(client, payload):
 8. 검색형과 홈판형의 적합도를 각각 0~100으로 평가하세요. 이 점수는 사용자에게 선택권을 주기 위한 참고값이며, AI가 작성 유형을 자동 선택해서는 안 됩니다.
 9. 검색형은 정보 정확성과 검색 의도 충족을 최우선으로 하고, 홈판형은 클릭을 유도하는 제목·첫 문장·이미지 흐름을 최우선으로 하세요.
 10. 추천 작성 유형을 계산하더라도 UI에서 자동 선택하거나 글 작성 유형으로 확정하지 마세요.
-11. 지원금·정부정책·공공정보·축제 등 공식 확인이 중요한 키워드는 공식 홈페이지 후보를 우선 검토하고, 실제 확인 가능한 URL과 그 페이지에서 가져온 핵심 사실을 official_sources에 남기세요. 공식 URL이 확인되지 않으면 억지로 만들지 마세요.
+11. 지원금·정부정책·공공정보·축제·국내여행 등 공식 확인이 중요한 키워드는 공식 홈페이지/공공기관 페이지 후보를 우선 검토하고, 실제 확인 가능한 URL과 그 페이지에서 가져온 핵심 사실을 official_sources에 남기세요.
+12. official_sources의 actions에는 실제 공식 페이지에서 확인된 경우에만 '신청하기', '자격 조회하기', '예약하기', '일정 확인하기', '내용 확인하기' 등의 짧은 버튼명을 붙이고 해당 공식 URL을 넣으세요. 별도의 신청/조회/예약 URL을 확인하지 못했다면 임의로 만들지 말고 actions를 빈 배열로 두세요.
+13. 공식 페이지의 대표 URL과 신청/조회/예약용 URL이 다르면 각각 구분하세요. URL은 반드시 제공된 검색 결과·실제 확인 페이지에서 확인된 주소만 사용하세요.
 12. 쿠팡파트너스 링크는 제품 추천/구매 의도가 실제로 있는 경우에만 필요 여부를 판단하고, 최대 1개 선택사항으로만 표시하세요. 애드센스 유도용 외부 링크는 제안하지 마세요.
 
 홈판 제목 공식:
@@ -770,7 +808,11 @@ def write_with_ai(client, analysis_payload, writing_options):
 [검색형 작성 규칙]
 - 검색자가 실제로 원하는 답을 빠르게 찾을 수 있도록 작성하세요.
 - 지원금·정부정책·축제·공공정보는 공식 출처에서 확인된 내용을 우선 사용하세요. 신청기간, 대상, 금액, 조건, 방법, 서류, 일정 등은 근거가 확인된 경우에만 단정하세요.
-- 공식 출처 URL은 official_sources에 기록하세요. 본문에 필요하면 '공식 홈페이지에서 확인'처럼 자연스럽게 안내하되 링크를 필수로 본문에 넣지는 마세요.
+- 공식 출처 URL은 official_sources에 기록하세요. 지원금·정부정책·국내여행·축제·공공서비스처럼 사용자가 실제로 신청/조회/예약/확인할 필요가 있는 주제라면, 실제 공식 페이지에서 확인된 actions도 함께 기록하세요. 신청·자격조회·예약 등의 URL을 확인하지 못한 경우 임의로 만들지 마세요. 본문에 URL을 억지로 길게 넣기보다 최종 화면의 공식 링크/행동 버튼 영역에서 안내할 수 있도록 하세요.
+- **공식 링크 배치는 한곳에 몰아넣지 마세요.** 자격·대상·조건을 설명한 직후에는 `자격 조회하기`, 신청기간·신청방법을 설명한 직후에는 `신청하기`, 예약·예매를 설명한 직후에는 `예약하기`, 일정·운영일을 설명한 직후에는 `일정 확인하기`처럼 **본문의 해당 정보 바로 아래**에 배치하세요.
+- 이를 위해 `inline_official_links`를 작성하고, 각 링크의 `insert_after`에는 body_markdown 안에 실제 존재하는 **고유한 소제목 또는 문장 일부(20~80자)**를 그대로 넣으세요. 링크는 반드시 해당 내용과 직접 관련된 공식 URL이어야 합니다.
+- 본문에 넣을 링크가 없으면 `inline_official_links`를 빈 배열로 두세요. 같은 공식 링크를 본문 여러 곳에 반복하지 마세요.
+- 최종 공식 출처 영역은 전체 공식 출처를 모아 보여주는 보조 영역이고, **신청/자격조회/예약 링크를 전부 그곳에만 몰아넣지 마세요.**
 - 검색형은 정보 누락을 막기 위해 H2/H3, 표, 체크리스트, FAQ 등을 내용에 맞게 활용하세요.
 
 [홈판 작성 규칙]
@@ -1410,18 +1452,34 @@ if analysis:
     if analysis.get("official_sources"):
         st.markdown("### 🔗 확인된 공식 출처")
         st.caption("지원금·정부정책·축제·공공정보 등에서 확인된 공식 페이지입니다. 최종 발행 전 직접 한 번 더 확인해 주세요.")
-        for src in analysis.get("official_sources", []):
+        for idx, src in enumerate(analysis.get("official_sources", []), 1):
             name = src.get("name", "공식 페이지")
             url = src.get("url", "")
             purpose = src.get("purpose", "")
             fact = src.get("verified_fact", "")
             st.markdown(f"**{name}**")
-            if url:
-                st.code(url, language=None)
             if purpose:
                 st.caption(purpose)
             if fact:
                 st.write(f"확인 내용: {fact}")
+            if url:
+                try:
+                    st.link_button("공식 페이지 확인", url, key=f"analysis_official_{idx}")
+                except Exception:
+                    st.markdown(f"[공식 페이지 확인]({url})")
+            actions = src.get("actions", []) or []
+            if actions:
+                cols = st.columns(min(len(actions), 3))
+                for j, action in enumerate(actions[:3]):
+                    label = str(action.get("label", "확인하기")).strip() or "확인하기"
+                    action_url = str(action.get("url", "")).strip()
+                    if not action_url:
+                        continue
+                    with cols[j]:
+                        try:
+                            st.link_button(label, action_url, key=f"analysis_action_{idx}_{j}")
+                        except Exception:
+                            st.markdown(f"[{label}]({action_url})")
 
     # 분석 결과는 2열 x 3행 카드 그리드로 표시합니다. 각 카드는 내부 스크롤을 가집니다.
     from html import escape as html_escape
@@ -1563,6 +1621,45 @@ if analysis:
             except Exception as e:
                 st.error(f"글 작성 중 오류가 발생했습니다: {e}")
 
+def render_body_with_inline_official_links(body_markdown, inline_links):
+    """본문의 관련 문단 바로 뒤에 공식 행동 링크를 배치합니다."""
+    body = body_markdown or ""
+    links = inline_links or []
+    used = set()
+    # 긴 anchor부터 처리해 부분 일치 충돌을 줄입니다.
+    for link in sorted(links, key=lambda x: len(str(x.get("insert_after", ""))), reverse=True):
+        anchor = str(link.get("insert_after", "")).strip()
+        url = str(link.get("url", "")).strip()
+        label = str(link.get("label", "확인하기")).strip() or "확인하기"
+        purpose = str(link.get("purpose", "")).strip()
+        if not anchor or not url or anchor in used:
+            continue
+        idx = body.find(anchor)
+        if idx < 0:
+            continue
+        end = idx + len(anchor)
+        # 링크가 문장 중간을 가리키면 해당 줄 끝까지를 본문 단위로 사용합니다.
+        line_end = body.find("\n", end)
+        if line_end < 0:
+            line_end = len(body)
+        insert_at = line_end
+        html = f'<div style="margin:8px 0 14px 0;">'
+        html += f'<a href="{html_escape(url)}" target="_blank" style="text-decoration:none;">'
+        html += f'<span style="display:inline-block;padding:7px 13px;border:1px solid #d1d5db;border-radius:8px;background:#f8fafc;font-weight:600;">🔗 {html_escape(label)}</span></a>'
+        if purpose:
+            html += f'<div style="font-size:0.82rem;color:#6b7280;margin-top:4px;">{html_escape(purpose)}</div>'
+        html += '</div>'
+        # Markdown과 HTML을 섞을 수 있으므로 조각 단위로 렌더링합니다.
+        before = body[:insert_at]
+        after = body[insert_at:]
+        st.markdown(before, unsafe_allow_html=True)
+        st.markdown(html, unsafe_allow_html=True)
+        body = after
+        used.add(anchor)
+    if body.strip():
+        st.markdown(body, unsafe_allow_html=True)
+    return used
+
 article = st.session_state.article
 
 if article:
@@ -1598,13 +1695,35 @@ if article:
     st.write(", ".join(article.get("long_tail_keywords", [])))
 
     st.markdown("### 본문")
-    st.markdown(article.get("body_markdown", ""))
+    inline_links = article.get("inline_official_links", []) or []
+    placed_inline_links = render_body_with_inline_official_links(article.get("body_markdown", ""), inline_links)
+    unplaced_inline_links = [x for x in inline_links if str(x.get("insert_after", "")).strip() not in placed_inline_links]
+    if unplaced_inline_links:
+        st.caption("※ 일부 공식 링크는 본문 위치를 정확히 찾지 못해 아래 공식 출처 영역에서 확인할 수 있습니다.")
 
     st.markdown("### 네이버 스마트에디터용 본문")
     st.caption("네이버 모바일 기준으로 문단·문장 호흡을 짧게 정리한 본문입니다. 복사 아이콘으로 복사한 뒤 네이버 스마트에디터에 Ctrl+V로 붙여넣을 수 있습니다.")
     smart_text = re.sub(r"^#{1,6}\s*", "", article.get("body_markdown", ""), flags=re.MULTILINE)
     smart_text = re.sub(r"\*\*(.*?)\*\*", r"\1", smart_text)
     smart_text = re.sub(r"\[(.*?)\]\([^)]*\)", r"\1", smart_text)
+
+    # 본문 내 공식 행동 링크도 같은 위치에 텍스트/URL 형태로 넣습니다.
+    # 네이버 스마트에디터 복사에서는 Streamlit 버튼 자체를 전달할 수 없으므로,
+    # 해당 정보 바로 아래에 [라벨] URL 형태로 넣어 링크 위치를 유지합니다.
+    for link in sorted(article.get("inline_official_links", []) or [], key=lambda x: len(str(x.get("insert_after", ""))), reverse=True):
+        anchor = str(link.get("insert_after", "")).strip()
+        label = str(link.get("label", "확인하기")).strip() or "확인하기"
+        url = str(link.get("url", "")).strip()
+        if not anchor or not url:
+            continue
+        idx = smart_text.find(anchor)
+        if idx < 0:
+            continue
+        line_end = smart_text.find("\n", idx + len(anchor))
+        if line_end < 0:
+            line_end = len(smart_text)
+        block = f"\n\n[{label}] {url}\n"
+        smart_text = smart_text[:line_end] + block + smart_text[line_end:]
 
     # FAQ도 스마트에디터 복사 영역에 함께 포함합니다.
     faq_items = article.get("faq", []) or []
@@ -1630,7 +1749,19 @@ if article:
             smart_text = smart_text.rstrip() + faq_block
 
     # 모바일 가독성용 최소 정리: 과도한 연속 빈 줄만 정리합니다.
-    smart_text = re.sub(r"\n{3,}", "\n\n", smart_text).strip() + "\n"
+    smart_text = re.sub(r"\n{3,}", "\n\n", smart_text).strip()
+
+    # 네이버 스마트에디터에 바로 붙여넣을 수 있도록 태그를 # 포함 형태로 함께 넣습니다.
+    # 쉼표만 있는 기존 출력은 사용하지 않고, 각 태그 앞에 #을 붙여 공백으로 구분합니다.
+    tags = []
+    for raw_tag in (article.get("tags", []) or []):
+        tag = str(raw_tag).strip().lstrip("#").replace(",", "")
+        if tag and tag not in tags:
+            tags.append(tag)
+    if tags:
+        smart_text = smart_text.rstrip() + "\n\n" + " ".join(f"#{tag}" for tag in tags)
+
+    smart_text = smart_text.strip() + "\n"
 
     st.code(smart_text, language=None)
 
@@ -1667,10 +1798,37 @@ if article:
         if item.get('prompt'):
             st.code(item.get("prompt", ""), language=None)
 
-    st.markdown("### 🔗 공식 출처 / 제휴 링크")
-    for src in article.get("official_sources", []) or analysis.get("official_sources", []):
-        if src.get("url"):
-            st.code(src.get("url"), language=None)
+    st.markdown("### 🔗 공식 출처 / 신청·조회·예약 링크")
+    official_sources = article.get("official_sources", []) or analysis.get("official_sources", [])
+    if official_sources:
+        st.caption("본문에서는 자격·신청·예약 등 해당 내용을 설명한 위치 바로 아래에 관련 링크를 배치하고, 이 영역에서는 전체 공식 출처를 모아 확인할 수 있습니다.")
+        for idx, src in enumerate(official_sources, 1):
+            name = src.get("name", "공식 페이지")
+            purpose = src.get("purpose", "")
+            url = str(src.get("url", "")).strip()
+            st.markdown(f"**{name}**")
+            if purpose:
+                st.caption(purpose)
+            if url:
+                try:
+                    st.link_button("공식 페이지 확인", url, key=f"article_official_{idx}")
+                except Exception:
+                    st.markdown(f"[공식 페이지 확인]({url})")
+            actions = src.get("actions", []) or []
+            if actions:
+                cols = st.columns(min(len(actions), 3))
+                for j, action in enumerate(actions[:3]):
+                    label = str(action.get("label", "확인하기")).strip() or "확인하기"
+                    action_url = str(action.get("url", "")).strip()
+                    if not action_url:
+                        continue
+                    with cols[j]:
+                        try:
+                            st.link_button(label, action_url, key=f"article_action_{idx}_{j}")
+                        except Exception:
+                            st.markdown(f"[{label}]({action_url})")
+    else:
+        st.caption("확인된 공식 출처가 없습니다.")
     if article.get("coupang_link_needed"):
         st.info("제품 추천 글이라 쿠팡파트너스 링크 1개 슬롯을 선택적으로 사용할 수 있습니다. 실제 파트너스 URL은 사용자가 확인 후 직접 입력하세요.")
         st.caption(article.get("coupang_link_reason", "제품 구매 의도 때문에 선택적으로 제안된 슬롯입니다."))
@@ -1678,7 +1836,13 @@ if article:
         st.caption("이 글에는 쿠팡파트너스 링크가 필수가 아닙니다.")
 
     st.markdown("### 태그")
-    st.code(", ".join(article.get("tags", [])), language=None)
+    display_tags = []
+    for raw_tag in (article.get("tags", []) or []):
+        tag = str(raw_tag).strip().lstrip("#").replace(",", "")
+        if tag and tag not in display_tags:
+            display_tags.append(tag)
+    st.code(" ".join(f"#{tag}" for tag in display_tags), language=None)
+    st.caption("스마트에디터용 본문 복사 영역에도 위 태그가 # 포함 형태로 함께 들어갑니다.")
 
     score, checks, count, gaps, gap_label = seo_check(article, analysis)
     st.divider()
