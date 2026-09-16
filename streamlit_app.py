@@ -8,7 +8,7 @@ import base64
 import hashlib
 import hmac
 from datetime import date, timedelta
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 import requests
 import streamlit as st
 from google import genai
@@ -298,6 +298,11 @@ def current_web_searches(keyword, client_id, client_secret, commercial=False, is
             f"{keyword} 공식",
             f"{keyword} 최신",
             f"{keyword} 신청 공식",
+            f"{keyword} 신청 일정",
+            f"{keyword} 접수 일정",
+            f"{keyword} 1차 2차",
+            f"{keyword} 2차",
+            f"{keyword} 모집 일정",
             f"{keyword} 축제 공식",
         ]
         if commercial:
@@ -326,36 +331,63 @@ def official_candidate_results(items):
             out.append(item)
     return dedupe_search_items(out)[:15]
 
+def _extract_page_text_and_links(raw, base_url=""):
+    # HTML 본문 + 이미지/접근성 속성 + 신청/접수 등 행동 링크를 범용적으로 추출합니다.
+    raw_no_script = re.sub(r"<script[\s\S]*?</script>", " ", raw or "", flags=re.I)
+    raw_no_script = re.sub(r"<style[\s\S]*?</style>", " ", raw_no_script, flags=re.I)
+    attrs = []
+    for m in re.finditer(r"""(?:alt|title|aria-label)\s*=\s*["']([^"']+)["']""", raw_no_script, flags=re.I):
+        v = re.sub(r"\s+", " ", clean_html(m.group(1))).strip()
+        if v: attrs.append(v)
+    text = clean_html(raw_no_script)
+    text = re.sub(r"\s+", " ", text).strip()
+    if attrs: text = (text + " " + " ".join(attrs)).strip()
+
+    action_terms = ("신청", "접수", "모집", "지원", "예약", "참여", "등록", "신청하기", "접수하기",
+                    "지원하기", "예약하기", "참여하기", "등록하기", "사전신청", "신청 페이지",
+                    "온라인 신청", "온라인 접수", "모집요강", "접수페이지")
+    links=[]
+    for m in re.finditer(r"""<a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)</a>""", raw_no_script, flags=re.I):
+        href=m.group(1).strip(); anchor=re.sub(r"\s+", " ", clean_html(m.group(2))).strip()
+        if not href or href.lower().startswith(("javascript:", "mailto:", "tel:", "#")): continue
+        full=urljoin(base_url, href) if base_url else href
+        if not full.startswith(("http://", "https://")): continue
+        if any(term.lower() in (anchor+" "+href).lower() for term in action_terms): links.append({"text":anchor,"url":full})
+    seen=set(); dedup=[]
+    for x in links:
+        if x["url"] not in seen: seen.add(x["url"]); dedup.append(x)
+    return text, dedup[:12]
+
 def fetch_source_pages(items, limit=5):
-    """웹검색 결과 중 상위 후보의 실제 페이지 내용을 짧게 확인합니다.
-    검색 결과만 보고 최신 할인율/코드/기간을 만들어내지 않도록 하기 위한 보강 단계입니다.
-    """
-    pages = []
+    """검색 결과의 실제 페이지를 읽고 본문·이미지 속성·행동 링크를 함께 수집합니다."""
+    pages=[]
     for item in (items or [])[:limit]:
-        url = (item.get("link") or item.get("originallink") or "").strip()
-        if not url or not url.startswith(("http://", "https://")):
-            continue
+        url=(item.get("link") or item.get("originallink") or "").strip()
+        if not url or not url.startswith(("http://", "https://")): continue
         try:
-            r = requests.get(
-                url, timeout=10,
-                headers={"User-Agent": "Mozilla/5.0 (compatible; ContentAnalyzer/2.4)"},
-            )
-            if not r.ok:
-                continue
-            raw = r.text
-            raw = re.sub(r"<script[\s\S]*?</script>", " ", raw, flags=re.I)
-            raw = re.sub(r"<style[\s\S]*?</style>", " ", raw, flags=re.I)
-            text = clean_html(raw)
-            text = re.sub(r"\s+", " ", text).strip()
-            if text:
-                pages.append({
-                    "title": clean_html(item.get("title", "")),
-                    "url": url,
-                    "text": text[:7000],
-                })
-        except Exception:
-            continue
+            r=requests.get(url, timeout=10, headers={"User-Agent":"Mozilla/5.0 (compatible; ContentAnalyzer/2.5)"})
+            if not r.ok: continue
+            text,links=_extract_page_text_and_links(r.text,url)
+            if text: pages.append({"title":clean_html(item.get("title","")),"url":url,"text":text[:9000],"action_links":links})
+        except Exception: continue
     return pages
+
+def fetch_related_action_pages(pages, limit=8):
+    """공식/참고 페이지의 신청·접수·모집·지원·예약 등 행동 링크를 따라가 실제 상태를 확인합니다."""
+    candidates=[]; seen=set()
+    for page in pages or []:
+        for link in page.get("action_links",[]) or []:
+            u=(link.get("url") or "").strip()
+            if u and u not in seen: seen.add(u); candidates.append((u,link.get("text",""),page.get("url","")))
+    out=[]
+    for url,anchor,parent in candidates[:limit]:
+        try:
+            r=requests.get(url,timeout=10,headers={"User-Agent":"Mozilla/5.0 (compatible; ContentAnalyzer/2.5)"})
+            if not r.ok: continue
+            text,links=_extract_page_text_and_links(r.text,url)
+            if text: out.append({"title":anchor or "공식 행동 페이지","url":url,"parent_url":parent,"text":text[:9000],"action_links":links})
+        except Exception: continue
+    return out
 
 ANALYSIS_SCHEMA = {
     "type": "OBJECT",
@@ -775,9 +807,18 @@ def analyze_with_ai(client, payload):
 - 중반에는 독자가 계속 읽을 이유가 되는 추가 정보/비교/체크포인트를 배치하고, 마지막에는 '그래서 어떻게 하면 되는지' 또는 '무엇을 기억하면 되는지'를 짧게 정리하세요.
 - 홈판형 이미지 계획은 단순 장식 이미지가 아니라 첫 화면의 시선 정지, 중간 정보 전달, 후반 저장 가치가 생기도록 역할을 나눠 설계하세요.
 
+현재 회차/신청상태 우선 규칙:
+- 아래 current_status는 실제 페이지에서 추출한 신청기간과 오늘 날짜를 비교한 편집 기준입니다.
+- current_status.status가 ACTIVE이면 **현재 신청 중인 회차를 제목·도입부·목차의 기준 회차로 우선 사용하세요.** 이미 끝난 과거 회차를 현재 진행 중인 것처럼 제목에 쓰지 마세요.
+- current_status.status가 UPCOMING이면 **다음 신청 회차를 중심으로 작성하세요.** 직전 회차는 '지난 회차' 또는 비교 설명이 필요할 때만 짧게 언급하세요.
+- current_status.status가 ENDED이면 확인된 다음 회차가 없으므로 종료 사실을 명확히 하고, 추측으로 다음 회차를 만들지 마세요.
+- 제목에 '1차/2차/3차' 같은 회차를 넣을 때는 반드시 current_status와 current_source_facts/source_pages의 근거를 확인하세요.
+- 사용자가 공식 홈페이지 URL을 입력한 경우에도 URL 자체를 제목의 주제로 삼지 말고, **그 페이지에서 현재 시점에 실제로 적용되는 신청 상태·일정·조건을 추출해 반영**하세요.
+
 현재 정보 검증:
 - current_source_facts는 '현재 확인된 사실' 후보입니다.
 - source_pages는 실제 웹페이지에서 추출한 참고 내용입니다.
+- action_pages는 공식/참고 페이지에서 신청·접수·모집·지원·예약 등의 행동 링크를 자동으로 따라가 확인한 실제 페이지입니다. 명시적인 마감/종료/신청불가 상태는 검색 결과의 오래된 정보보다 우선합니다.
 - current_source_facts에는 최소한 글에 실제로 사용할 가치가 높은 사실만 넣고, source_url을 반드시 남기세요.
 - 최신 정보가 부족하면 freshness_warning에 명확히 적으세요.
 
@@ -859,6 +900,7 @@ def generate_titles_for_mode(client, analysis_payload, mode):
 - 같은 단어와 핵심 키워드의 불필요한 반복을 피하세요.
 - 확인되지 않은 최신 날짜, 할인율, 코드, 가격, 이벤트는 제목에 넣지 마세요.
 - 제목에서 약속한 내용은 실제 본문으로 작성할 수 있어야 합니다.
+- 회차/신청 일정이 있는 키워드는 현재 회차 상태를 최우선으로 반영하세요. 과거 회차가 검색 결과에 더 많이 보여도 현재 상태와 맞지 않으면 제목에서 선택하지 마세요.
 - 정확히 3개를 반환하세요.
 - 여행 콘텐츠 모드가 true이면 제목은 검색자가 해결하려는 구체적인 여행 선택 문제를 반영하세요. 핵심 키워드를 앞쪽에 두고 '추천/비교/선택/일정/숙소 조합' 중 실제 본문에서 다루는 한 가지 핵심 약속을 결합하세요.
 - 추천 후보를 실제로 조사한 경우에만 'TOP 3', '추천 숙소', 특정 숙소명 등을 제목에 사용할 수 있습니다. 본문에서 실제로 다룰 수 없는 후보나 수치를 제목에 넣지 마세요.
@@ -869,6 +911,7 @@ def generate_titles_for_mode(client, analysis_payload, mode):
 SEO 메인키워드: {analysis_payload.get("main_keyword") or analysis_payload.get("keyword", "")}
 메인키워드 선정 근거: {analysis_payload.get("main_keyword_evidence", "")}
 검색 의도: {analysis_payload.get("search_intent", "")}
+현재 회차/신청 상태: {json.dumps(analysis_payload.get("current_status", {}), ensure_ascii=False)}
 콘텐츠 GAP: {json.dumps(analysis_payload.get("content_gaps", []), ensure_ascii=False)}
 추가 검색 표현: {json.dumps(analysis_payload.get("extra_search_terms", []), ensure_ascii=False)}
 연관 키워드: {json.dumps(analysis_payload.get("related_keywords", []), ensure_ascii=False)}
@@ -1021,6 +1064,9 @@ SEO 메인 키워드: {analysis_payload.get("main_keyword") or analysis_payload[
 추천 콘텐츠 유형: {analysis_payload.get("recommended_content_mode", "AUTO")}
 이미지 형식 분석 추천: {json.dumps(analysis_payload.get("image_format_recommendations", []), ensure_ascii=False, indent=2)}
 
+[현재 회차/신청 상태]
+{json.dumps(analysis_payload.get("current_status", {}), ensure_ascii=False, indent=2)}
+
 [최신 근거 데이터]
 {json.dumps(analysis_payload.get("current_source_facts", []), ensure_ascii=False, indent=2)}
 
@@ -1084,6 +1130,7 @@ A. 제목 약속: 제목의 핵심 약속이 본문 첫 30%부터 실제로 해�
 B. 검색의도: 분석된 검색의 핵심 질문이 빠짐없이 답변됐는가?
 C. GAP: content_gaps가 실제 본문에 구체적인 정보로 반영됐는가?
 D. 최신성: 현재 근거가 필요한 숫자/날짜/가격/조건이 모두 근거 데이터와 일치하는가?
+D-1. 회차 상태: 현재 신청 중/다음 신청 회차가 확인된 경우 과거 회차를 현재 회차처럼 제목·도입부에 사용하지 않았는가?
 E. 주제 집중도: 제목과 직접 관계없는 문단이 없는가?
 F. 자연스러움: 키워드 반복·동의어 나열·AI식 반복 문장이 없는가?
 G. 가독성: 모바일에서 1~3문장 단위로 끊기며 H2/H3 역할이 명확한가?
@@ -1175,7 +1222,79 @@ def seo_check(article, analysis):
     score = round(sum(checks.values()) / len(checks) * 100)
     return score, checks, text.count(keyword) if keyword else 0, gaps, gap_label
 
-def build_analysis_payload(keyword, category, trend, blog, news, web, images, shopping, benchmark, specific_post=None, blog_id="", current_web=None, source_pages=None, is_travel_content=False, extra_search_terms=None, additional_search_data=None):
+
+
+def _extract_status_evidence(text):
+    """특정 사이트의 메뉴명을 하드코딩하지 않고 신청/접수/모집 등의 상태 표현을 의미 기준으로 추출합니다."""
+    t=re.sub(r"\s+"," ",text or "").strip(); found=[]
+    patterns=[
+        ("CLOSED",r"(?:신청|접수|모집|지원|예약|등록|참여)[^.!?]{0,35}(?:마감|종료|완료|불가)|(?:마감|종료|완료|불가)[^.!?]{0,35}(?:신청|접수|모집|지원|예약|등록|참여)|현재[^.!?]{0,25}(?:신청|접수|모집|지원|예약)[^.!?]{0,20}(?:할 수 없습니다|불가능합니다|불가합니다)|접수기간이 아닙니다|신청기간이 아닙니다|모집이 완료되었습니다|모집 종료되었습니다"),
+        ("UPCOMING",r"(?:신청|접수|모집|지원|예약|등록|참여)[^.!?]{0,30}(?:예정|오픈 예정|시작 예정)|(?:예정|오픈 예정)[^.!?]{0,30}(?:신청|접수|모집|지원|예약)|(?:신청|접수|모집|지원|예약)[^.!?]{0,20}(?:부터|부터 시작)"),
+        ("OPEN",r"(?:신청|접수|모집|지원|예약|등록|참여)[^.!?]{0,25}(?:가능|진행 중|진행중|모집 중|모집중)|(?:신청하기|접수하기|지원하기|예약하기|참여하기|등록하기|온라인 신청|온라인 접수)")]
+    for state,pat in patterns:
+        for m in re.finditer(pat,t,flags=re.I):
+            found.append({"state":state,"snippet":t[max(0,m.start()-45):min(len(t),m.end()+55)]})
+            if len(found)>=30:return found
+    return found
+
+def _round_evidence(text, round_no):
+    t=re.sub(r"\s+"," ",text or ""); evidence=[]
+    for m in re.finditer(rf"{round_no}\s*차",t,flags=re.I):
+        evidence.extend(_extract_status_evidence(t[max(0,m.start()-140):min(len(t),m.end()+220)]))
+    return evidence
+
+def derive_current_status(keyword,current_date,source_pages=None,official_source_pages=None,action_pages=None,benchmark=None):
+    """공식/참고 페이지의 기간 + 실제 행동 페이지 상태를 종합합니다.
+    특정 사이트의 '사전신청하기' 같은 메뉴명이나 단일 '마감' 문구에 의존하지 않습니다."""
+    texts=[]
+    for page in (official_source_pages or []):
+        if page.get('text'): texts.append((page.get('title',''),page.get('url',''),page.get('text',''),True))
+    for page in (action_pages or []):
+        if page.get('text'): texts.append((page.get('title',''),page.get('url',''),page.get('text',''),True))
+    for page in (source_pages or []):
+        if page.get('text'): texts.append((page.get('title',''),page.get('url',''),page.get('text',''),False))
+    if benchmark and benchmark.get('status')=='ok' and benchmark.get('text'):
+        texts.append(('사용자 지정 참고 URL',benchmark.get('url',''),benchmark.get('text',''),True))
+
+    pat=re.compile(r'(\d+)\s*차[^.\n]{0,100}?(?:신청|접수|모집|지원)[^0-9]{0,35}(\d{1,2})\s*(?:월|[./-])\s*(\d{1,2})\s*(?:일)?\s*(?:~|∼|\-|–|부터|까지)\s*(?:(\d{1,2})\s*(?:월|[./-])\s*)?(\d{1,2})\s*(?:일)?',re.I)
+    found=[]; seen=set(); all_status=[]
+    for title,url,text,is_official in texts:
+        clean=re.sub(r"\s+"," ",text)
+        ev=_extract_status_evidence(clean)
+        if ev: all_status.append({'url':url,'title':title,'official':is_official,'evidence':ev[:12]})
+        for m in pat.finditer(clean):
+            try:
+                rno=int(m.group(1)); sm=int(m.group(2)); sd=int(m.group(3)); em=int(m.group(4) or sm); ed=int(m.group(5))
+                st=date(current_date.year,sm,sd); en=date(current_date.year,em,ed)
+                if en<st: en=date(current_date.year+1,em,ed)
+                key=(rno,st,en,url)
+                if key in seen: continue
+                seen.add(key); found.append({'round':rno,'start':st,'end':en,'title':title,'url':url,'official':is_official,'evidence':_round_evidence(clean,rno)})
+            except Exception: continue
+
+    if not found:
+        closed=sum(1 for x in all_status for e in x['evidence'] if e['state']=='CLOSED')
+        opened=sum(1 for x in all_status for e in x['evidence'] if e['state']=='OPEN')
+        state='ENDED' if closed and not opened else ('ACTIVE' if opened and not closed else 'UNKNOWN')
+        return {'status':state,'current_round':'','current_round_state':'신청 마감' if state=='ENDED' else ('신청 가능' if state=='ACTIVE' else '확인 필요'),'next_round':'','current_status_reason':'회차 기간은 구조화하지 못했지만 공식/행동 페이지의 상태 표현을 확인했습니다.' if all_status else '공식/참고 페이지에서 회차별 기간과 상태를 확인하지 못했습니다.','rounds':[],'status_evidence':all_status[:15]}
+
+    found.sort(key=lambda x:(x['start'],x['round']))
+    for x in found:
+        states=[e.get('state') for e in x.get('evidence',[])]
+        x['explicit_closed']='CLOSED' in states
+        x['explicit_open']='OPEN' in states and not x['explicit_closed']
+
+    active=[x for x in found if x['start']<=current_date<=x['end'] and not x['explicit_closed']]
+    upcoming=[x for x in found if x['start']>current_date and not x['explicit_closed']]
+    if active:
+        chosen=active[0]; state='ACTIVE'; reason=f"현재 기준일 {current_date.isoformat()}은 {chosen['round']}차 신청기간({chosen['start'].month}/{chosen['start'].day}~{chosen['end'].month}/{chosen['end'].day})입니다. 공식 상태 문구상 마감으로 확인되지 않았습니다."
+    elif upcoming:
+        chosen=upcoming[0]; state='UPCOMING'; reason=f"현재 기준일 {current_date.isoformat()}에는 이전 회차가 종료 또는 공식 마감되었고, 다음 신청은 {chosen['round']}차({chosen['start'].month}/{chosen['start'].day}~{chosen['end'].month}/{chosen['end'].day})입니다."
+    else:
+        chosen=found[-1]; state='ENDED'; reason=f"현재 기준일 {current_date.isoformat()}에는 확인된 신청기간이 모두 종료되었거나 공식 페이지에서 마감 상태로 확인되었습니다."
+    return {'status':state,'current_round':f"{chosen['round']}차",'current_round_state':'현재 신청 중' if state=='ACTIVE' else ('다음 신청' if state=='UPCOMING' else '종료'),'next_round':f"{upcoming[0]['round']}차" if upcoming and upcoming[0]['round']!=chosen['round'] else '','current_status_reason':reason,'rounds':[{'round':f"{x['round']}차",'application_start':x['start'].isoformat(),'application_end':x['end'].isoformat(),'source_url':x['url'],'source_title':x['title'],'explicit_closed':x.get('explicit_closed',False),'explicit_open':x.get('explicit_open',False),'status_evidence':x.get('evidence',[])[:6]} for x in found],'status_evidence':all_status[:15]}
+
+def build_analysis_payload(keyword, category, trend, blog, news, web, images, shopping, benchmark, specific_post=None, blog_id="", current_web=None, source_pages=None, official_source_pages=None, action_pages=None, is_travel_content=False, extra_search_terms=None, additional_search_data=None):
     has_specific = bool(specific_post and specific_post.get("status") not in (None, "not_provided"))
     return {
         "keyword": keyword,
@@ -1190,6 +1309,7 @@ def build_analysis_payload(keyword, category, trend, blog, news, web, images, sh
         "current_web_results": compact_results(current_web or [], ["title", "description", "link"]),
         "source_pages": source_pages or [],
         "current_date": date.today().isoformat(),
+        "current_status": derive_current_status(keyword, date.today(), source_pages=source_pages, official_source_pages=[], benchmark=benchmark),
         "image_results": compact_results(images.get("items", []), ["title", "link", "thumbnail"]),
         "own_blog_id": blog_id,
         "own_existing_posts": [],
@@ -1221,8 +1341,7 @@ def fetch_benchmark(url):
         raw = r.text
         raw = re.sub(r"<script[\s\S]*?</script>", " ", raw, flags=re.I)
         raw = re.sub(r"<style[\s\S]*?</style>", " ", raw, flags=re.I)
-        text = clean_html(raw)
-        text = re.sub(r"\s+", " ", text).strip()
+        text, links = _extract_page_text_and_links(raw, url)
         host = re.sub(r"^www\.", "", urlparse(url).netloc.lower())
         if host.endswith("go.kr") or host.endswith("gov.kr") or host.endswith("korea.kr") or host.endswith("or.kr"):
             source_type = "OFFICIAL_REFERENCE"
@@ -1232,7 +1351,7 @@ def fetch_benchmark(url):
             source_type = "NEWS_REFERENCE"
         else:
             source_type = "WEB_REFERENCE"
-        return {"status": "ok", "url": url, "source_type": source_type, "host": host, "text": text[:9000]}
+        return {"status": "ok", "url": url, "source_type": source_type, "host": host, "text": text[:9000], "action_links": links}
     except Exception as e:
         return {"status": "failed", "url": url, "error": str(e)}
 
@@ -1528,8 +1647,17 @@ if analyze_clicked:
             st.write("⑥ 최신·공식 웹문서 보강 검색")
             current_web = current_web_searches(keyword, naver_id, naver_secret, commercial=commercial, is_travel_content=travel_content)
             official_candidates = official_candidate_results(current_web)
-            source_pages = fetch_source_pages(current_web, limit=7)
-            official_source_pages = fetch_source_pages(official_candidates, limit=5)
+            source_pages = fetch_source_pages(current_web, limit=12)
+            official_source_pages = fetch_source_pages(official_candidates, limit=8)
+            action_seed_pages = list(official_source_pages) + list(source_pages[:6])
+            if benchmark_url.strip():
+                try:
+                    benchmark_seed = fetch_benchmark(benchmark_url)
+                    if benchmark_seed.get("status") == "ok":
+                        action_seed_pages.append(benchmark_seed)
+                except Exception:
+                    pass
+            action_pages = fetch_related_action_pages(action_seed_pages, limit=8)
 
             st.write("⑦ 이미지 검색")
             images = naver_search("image", keyword, naver_id, naver_secret, display=10, sort="sim")
@@ -1563,12 +1691,17 @@ if analyze_clicked:
             payload = build_analysis_payload(
                 keyword, category, trend, blog, news, web, images,
                 shopping, benchmark, specific_post=specific_post, blog_id=blog_id,
-                current_web=current_web, source_pages=source_pages, is_travel_content=travel_content,
+                current_web=current_web, source_pages=source_pages, official_source_pages=official_source_pages, action_pages=action_pages, is_travel_content=travel_content,
                 extra_search_terms=extra_search_terms, additional_search_data=additional_search_data
             )
             payload["searchad_keyword_data"] = compact_searchad_keywords(searchad_data, limit=50)
             payload["official_candidate_results"] = compact_results(official_candidates, ["title", "description", "link"])
             payload["official_source_pages"] = official_source_pages
+            payload["action_pages"] = action_pages
+            payload["current_status"] = derive_current_status(
+                keyword, date.today(), source_pages=source_pages,
+                official_source_pages=official_source_pages, action_pages=action_pages, benchmark=benchmark
+            )
 
             st.write("⑪ AI 콘텐츠 전략 분석")
             ai = analyze_with_ai(client, payload)
@@ -1598,8 +1731,8 @@ if analyze_clicked:
                 payload["existing_content_relevance"] = "기존글 비교를 수행하지 않고 현재 키워드 자체의 검색 의도와 콘텐츠 GAP을 기준으로 분석했습니다."
                 payload["existing_content_strengths"] = []
                 payload["existing_content_missing_or_extendable"] = []
-                payload["current_time_extension_points"] = []
-                payload["new_content_opportunities"] = []
+                # 기존글 비교 결과만 초기화하고, 최신성/현재회차 분석 결과는 보존합니다.
+                payload["new_content_opportunities"] = payload.get("new_content_opportunities", [])
                 payload["cannibalization_note"] = "기존글 URL을 지정하지 않았으므로 특정 기존글과의 자기잠식 비교는 수행하지 않았습니다."
 
             st.session_state.analysis = payload
