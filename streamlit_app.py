@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 st.set_page_config(
-    page_title="네이버 콘텐츠 기회 분석기 V2.4.1",
+    page_title="네이버 콘텐츠 기회 분석기 V2.5 SEO/HOME",
     page_icon="🔎",
     layout="wide",
 )
@@ -442,6 +442,21 @@ ANALYSIS_SCHEMA = {
         "recommended_new_keywords": {"type": "ARRAY", "items": {"type": "STRING"}},
         "cannibalization_note": {"type": "STRING"},
         "recommended_source_post": {"type": "STRING"},
+        "image_format_recommendations": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "image_id": {"type": "INTEGER"},
+                    "target_section": {"type": "STRING"},
+                    "recommended_type": {"type": "STRING"},
+                    "confidence": {"type": "INTEGER"},
+                    "reason": {"type": "STRING"},
+                    "visual_goal": {"type": "STRING"}
+                },
+                "required": ["image_id", "target_section", "recommended_type", "confidence", "reason", "visual_goal"]
+            }
+        },
         "travel_checkpoints": {"type": "ARRAY", "items": {"type": "STRING"}}
     },
     "required": [
@@ -455,7 +470,7 @@ ANALYSIS_SCHEMA = {
         "existing_content_relevance", "existing_content_strengths",
         "existing_content_missing_or_extendable", "current_time_extension_points",
         "new_content_opportunities", "recommended_new_keywords",
-        "cannibalization_note", "recommended_source_post", "travel_checkpoints"
+        "cannibalization_note", "recommended_source_post", "image_format_recommendations", "travel_checkpoints"
     ],
 }
 
@@ -510,6 +525,9 @@ ARTICLE_SCHEMA = {
                     "role": {"type": "STRING"},
                     "purpose": {"type": "STRING"},
                     "need_score": {"type": "INTEGER"},
+                    "image_type": {"type": "STRING"},
+                    "image_type_reason": {"type": "STRING"},
+                    "visual_text": {"type": "ARRAY", "items": {"type": "STRING"}},
                     "source": {"type": "STRING"},
                     "search_keywords": {"type": "ARRAY", "items": {"type": "STRING"}},
                     "orientation": {"type": "STRING"},
@@ -517,7 +535,7 @@ ARTICLE_SCHEMA = {
                     "alt": {"type": "STRING"},
                     "reason": {"type": "STRING"}
                 },
-                "required": ["image_id", "insert_after", "role", "purpose", "need_score", "source", "search_keywords", "orientation", "prompt", "alt", "reason"],
+                "required": ["image_id", "insert_after", "role", "purpose", "need_score", "image_type", "image_type_reason", "visual_text", "source", "search_keywords", "orientation", "prompt", "alt", "reason"],
             },
         },
         "inline_official_links": {
@@ -660,7 +678,11 @@ def analyze_with_ai(client, payload):
 
 핵심 원칙:
 1. 사용자가 입력한 키워드는 Creator Advisor에서 이미 선별한 '원본 키워드'입니다. 이 키워드를 분석의 출발점이자 주제의 중심으로 취급하세요.
-2. 원본 키워드 자체의 네이버 검색 데이터(블로그·검색트렌드·뉴스·웹문서·이미지)를 먼저 분석한 뒤, 그 결과에서 실제로 확인되는 연관 검색어·검색 표현을 찾아 메인키워드를 결정하세요.
+2. 원본 키워드 자체의 네이버 검색 데이터(블로그·검색트렌드·뉴스·웹문서·이미지)를 먼저 분석하세요.
+2-1. 사용자가 입력한 '추가 검색 표현'이 있다면 각각의 실제 네이버 검색 결과를 별도로 확인하고, 원본 키워드와 같은 주제를 가리키는 표현인지 판단하세요. 이 표현들은 오타·유사명칭·띄어쓰기·통용명칭일 수 있으므로 버리지 말고 검색 유입을 고려한 보조 표현으로 관리하세요.
+2-2. 추가 검색 표현이 실제로 같은 대상을 가리킨다는 근거가 있으면 본문에서 자연스럽게 설명하거나 관련 표현으로 사용할 수 있습니다. 단, 의미가 다른 표현은 억지로 포함하지 마세요.
+2-3. 추가 검색 표현은 원칙적으로 SEO 메인키워드를 바꾸는 용도가 아닙니다. 사용자가 입력한 원본 키워드를 메인키워드로 유지하고, 실제 검색 맥락을 넓히는 보조 표현으로 활용하세요.
+2. 그 결과에서 실제로 확인되는 연관 검색어·검색 표현을 찾아 메인키워드를 결정하세요.
 3. 메인키워드는 원칙적으로 사용자가 입력한 원본 키워드를 그대로 사용하세요. 단, 네이버 검색 데이터에서 띄어쓰기/표현 차이가 명확하게 확인되고 그 표현이 실제 검색에 더 적합하다고 판단되는 경우에만 연관 검색어를 메인키워드로 선택하세요. 근거 없이 새로운 키워드를 만들거나 다른 주제로 바꾸지 마세요.
 4. 반환하는 main_keyword는 이후 제목과 본문 전체에서 사용할 '고정 SEO 메인키워드'입니다. 제목 생성 단계에서 다시 임의로 바꾸지 마세요.
 5. 시의성이 있는 키워드는 '현재 웹검색 보강 결과'와 실제 페이지 확인 결과를 최우선으로 참고하세요.
@@ -675,13 +697,27 @@ def analyze_with_ai(client, payload):
 11. 지원금·정부정책·공공정보·축제·국내여행 등 공식 확인이 중요한 키워드는 공식 홈페이지/공공기관 페이지 후보를 우선 검토하고, 실제 확인 가능한 URL과 그 페이지에서 가져온 핵심 사실을 official_sources에 남기세요.
 12. official_sources의 actions에는 실제 공식 페이지에서 확인된 경우에만 '신청하기', '자격 조회하기', '예약하기', '일정 확인하기', '내용 확인하기' 등의 짧은 버튼명을 붙이고 해당 공식 URL을 넣으세요. 별도의 신청/조회/예약 URL을 확인하지 못했다면 임의로 만들지 말고 actions를 빈 배열로 두세요.
 13. 공식 페이지의 대표 URL과 신청/조회/예약용 URL이 다르면 각각 구분하세요. URL은 반드시 제공된 검색 결과·실제 확인 페이지에서 확인된 주소만 사용하세요.
+13-1. 공식 페이지에서 현재 상태가 바뀐 사실(예: 1차 마감, 2차 일정, 추가 접수, 변경된 조건, 현재 운영기간 등)을 발견했다면 current_source_facts와 current_time_extension_points에 명시하세요. 단순히 '공식 페이지가 있다'로 끝내지 말고, 현재 검색자가 기존 콘텐츠에서 놓치기 쉬운 최신 정보를 찾아내세요.
+13-2. 공식 페이지에서 발견한 정보가 기존 검색 결과의 일반적인 설명보다 더 최신이거나 구체적이라면 그 차이를 opportunity/content_gaps/new_content_opportunities에 반영하세요.
+13-3. 공식 페이지의 사실은 글에 사용할 수 있지만, 참고/벤치마크 URL의 사실은 공식 또는 다른 신뢰 가능한 근거로 교차 확인되지 않았다면 현재 사실로 확정하지 마세요.
 12. 쿠팡파트너스 링크는 제품 추천/구매 의도가 실제로 있는 경우에만 필요 여부를 판단하고, 최대 1개 선택사항으로만 표시하세요. 애드센스 유도용 외부 링크는 제안하지 마세요.
+13. 이미지 형식도 콘텐츠 전략의 일부로 분석하세요. 각 핵심 소제목/본문 구간을 기준으로 독자가 내용을 더 빨리 이해할 수 있는 시각 형식을 판단하세요.
+14. `image_format_recommendations`에는 실제 글에서 사용할 후보 이미지 슬롯을 3개 이상(홈판형이면 5개 이상 권장) 제안하고, 각 슬롯에 `recommended_type`을 `PHOTO` 또는 `INFOGRAPHIC` 중 하나로 명확히 지정하세요.
+15. 날짜·일정·가격·조건·비교·순서·통계처럼 구조화된 정보는 INFOGRAPHIC을 우선 검토하고, 장소·음식·제품·풍경·분위기·사용 장면처럼 실제 모습을 보여주는 것이 핵심이면 PHOTO를 우선 검토하세요. 둘 다 가능한 경우에는 글의 목적과 독자 이해도를 기준으로 하나를 선택하세요.
+16. 인포그래픽 추천은 '글자 많은 포스터'를 뜻하지 않습니다. 핵심 숫자/날짜/비교/단계 등 최소 정보만 시각적으로 보여주는 구성을 우선하세요. 사진 추천은 단순히 예쁜 사진을 뜻하지 않고 해당 소제목의 내용을 설명하는 장면이어야 합니다.
 
 홈판 제목 공식:
 - 반전, 숫자, 의외성, 상황, 경험, 궁금증을 조합해 클릭 이유를 만드세요.
 - '직접 해보니', '알고 보니', '의외로', '결국', '생각보다', '다시 한다면' 같은 표현은 주제에 자연스럽게 맞을 때 활용하세요.
 - 과장, 허위, 확인되지 않은 수치·기간·효과를 만들지 마세요.
 - 홈판형 제목 3개를 만들 때 가능하면 서로 다른 클릭 장치를 사용하세요: 반전형 / 숫자형 / 의외성·경험형.
+
+참고/벤치마크 URL 분석 원칙:
+- benchmark가 입력되면 URL의 종류가 블로그인지 공식 페이지인지 뉴스인지 일반 웹페이지인지 먼저 구분하세요.
+- 블로그/뉴스/일반 웹페이지는 제목 구성, 목차, 정보 배열, 독자 질문, 빠진 내용, 차별화 포인트를 분석하는 참고자료로 사용하세요. 그대로 베끼거나 문장을 재현하지 마세요.
+- 공식 홈페이지/공공기관 페이지라면 단순 벤치마크가 아니라 최신 사실의 보강 후보로 보고, 제공된 official_source_pages와 함께 대조하세요. 공식 페이지에서 확인된 핵심 사실은 current_source_facts와 official_sources에 반영하세요.
+- 참고 URL 하나가 제공됐다고 해서 그 페이지의 모든 주장을 사실로 확정하지 마세요. 공식 근거가 필요한 주제는 공식 페이지를 우선합니다.
+- 참고 URL에서 현재 글에 추가할 가치가 있는 정보가 발견되면 content_gaps, current_time_extension_points, new_content_opportunities에 구체적으로 기록하세요.
 
 기존 콘텐츠 자산 원칙:
 - 내 블로그 주소/ID는 이 앱에서 내 블로그 전체를 자동 검색하기 위한 값으로 사용하지 않습니다.
@@ -722,11 +758,37 @@ def analyze_with_ai(client, payload):
 - 'TOP 3'를 제목이나 본문에 사용할 경우 실제로 3개 후보를 선정하고 각각의 역할과 차이를 설명하세요. 'TOP 3'를 쓰지 않았다면 후보 수를 억지로 3개로 맞추지 마세요.
 - 실제 방문 경험이 입력되지 않았다면 방문한 것처럼 추정하거나 1인칭 체험을 만들지 마세요. 여행 정보·추천형에서는 '제가 가보니', '직접 묵어보니' 같은 표현을 사용하지 마세요.
 
+검색 노출 가능성 극대화용 콘텐츠 설계:
+- 단순히 메인키워드를 반복하는 글을 만들지 말고, 검색자가 이 키워드를 입력했을 때 해결하려는 '핵심 질문'을 3~7개로 추출하세요.
+- 핵심 질문은 실제 검색 결과 제목·설명·연관 검색어·뉴스·웹문서·공식자료에서 근거를 찾아 작성하세요. 임의로 일반적인 질문을 만들지 마세요.
+- recommended_outline은 키워드 나열 순서가 아니라 '검색자가 정보를 찾는 순서'가 되도록 설계하세요. 가장 중요한 답을 앞쪽에 두고, 신청/예약/구매/선택처럼 행동이 필요한 주제는 행동 방법을 지나치게 뒤로 미루지 마세요.
+- content_gaps는 '경쟁문서에 없는 정보'뿐 아니라 '현재 검색자가 기존 글에서 놓치기 쉬운 최신 정보', '제목은 약속하지만 본문에서 부족하기 쉬운 정보'도 포함하세요.
+- 검색형/혼합형에서 반드시 갖춰야 할 정보와 있으면 차별화되는 정보를 구분해서 판단하세요.
+- 키워드의 검색의도와 직접 관련 없는 일반론으로 글자 수를 늘리는 전략은 사용하지 마세요.
+- 제목에서 약속한 정보가 실제 본문에서 충분히 답변될 수 있도록 title promise를 분석 단계에서 검토하세요.
+
+홈판 콘텐츠 설계:
+- 홈판은 검색형 글을 짧게 줄인 형태가 아닙니다. '스크롤을 멈출 이유 → 궁금증 → 핵심 반전/정보 → 읽고 나서 얻는 이득 → 저장/공유할 이유'의 흐름으로 설계하세요.
+- home_feed_angle에는 단순한 클릭 문구가 아니라 '왜 지금 이 글을 눌러야 하는지'와 '읽고 나서 무엇을 알게 되는지'를 함께 적으세요.
+- 홈판형은 제목과 첫 문장의 정보가 정확히 연결되어야 하며, 낚시성 과장·근거 없는 숫자·가짜 경험을 사용하지 마세요.
+- 홈판 본문은 한 문단에 한 메시지를 원칙으로 하고, 초반 20~30% 안에 핵심 궁금증 또는 예상 밖의 정보를 한 번 해소해 이탈을 줄이세요.
+- 중반에는 독자가 계속 읽을 이유가 되는 추가 정보/비교/체크포인트를 배치하고, 마지막에는 '그래서 어떻게 하면 되는지' 또는 '무엇을 기억하면 되는지'를 짧게 정리하세요.
+- 홈판형 이미지 계획은 단순 장식 이미지가 아니라 첫 화면의 시선 정지, 중간 정보 전달, 후반 저장 가치가 생기도록 역할을 나눠 설계하세요.
+
 현재 정보 검증:
 - current_source_facts는 '현재 확인된 사실' 후보입니다.
 - source_pages는 실제 웹페이지에서 추출한 참고 내용입니다.
 - current_source_facts에는 최소한 글에 실제로 사용할 가치가 높은 사실만 넣고, source_url을 반드시 남기세요.
 - 최신 정보가 부족하면 freshness_warning에 명확히 적으세요.
+
+[사용자 추가 검색 표현]
+{json.dumps(payload.get("extra_search_terms", []), ensure_ascii=False, indent=2)}
+
+[추가 검색 표현별 네이버 검색 데이터]
+{json.dumps(payload.get("additional_search_data", []), ensure_ascii=False, indent=2)}
+
+[참고/벤치마크 URL]
+{json.dumps(payload.get("benchmark", {}), ensure_ascii=False, indent=2)}
 
 [네이버 검색광고 키워드 도구 데이터]
 {json.dumps(payload.get("searchad_keyword_data", []), ensure_ascii=False, indent=2)}
@@ -741,6 +803,15 @@ def analyze_with_ai(client, payload):
 - 후보별 상세 H2에는 한 후보만 대응시키고, 전체 비교표는 후보별 H2 밖의 독립 섹션으로 배치하세요.
 - 추천 후보를 3개 선정했다면 outline과 current_source_facts/source_pages에 그 후보를 뒷받침할 근거가 있는지 확인하세요.
 - 검색 자료만으로 특정 후보의 핵심 사실을 확인할 수 없다면 해당 후보를 확정 추천하지 말고 '추가 확인 필요'로 표시하세요.
+
+이미지 형식 추천 산출 규칙:
+- `image_format_recommendations`는 최종 글의 소제목/본문 흐름을 기준으로 작성합니다.
+- 각 항목의 `target_section`은 실제 recommended_outline 또는 본문에서 식별 가능한 소제목을 사용하세요.
+- `recommended_type`은 반드시 PHOTO 또는 INFOGRAPHIC 중 하나입니다.
+- `confidence`는 0~100 사이 정수입니다.
+- `reason`에는 왜 사진/인포그래픽이 더 적합한지 한두 문장으로 설명하세요.
+- `visual_goal`에는 이미지 한 장을 본 뒤 독자가 무엇을 이해해야 하는지 적으세요.
+- 이미지 안에 들어갈 사실은 current_source_facts/source_pages 등 근거가 있는 정보만 사용하세요.
 
 JSON으로만 답하세요.
 """
@@ -777,10 +848,11 @@ def generate_titles_for_mode(client, analysis_payload, mode):
 
 [규칙]
 - 검색형: 검색 의도와 핵심 키워드가 명확해야 하며, 공백 포함 약 28~38자를 목표로 하세요. 너무 짧아 정보 가치가 사라지지 않도록 메인키워드 + 검색 의도 + 클릭 보조 요소 1개 정도를 조합하세요.
-- 홈판형: 반전, 숫자, 의외성, 상황, 경험, 궁금증 중 서로 다른 클릭 장치를 사용하세요. 공백 포함 약 25~38자를 목표로 하되, 후킹을 억지로 삭제해 짧게 만들지 마세요. **메인키워드를 반드시 그대로 포함**하고 그 뒤에 클릭 이유를 붙이세요.
+- 홈판형: 검색형 제목을 짧게 줄이지 마세요. '상황/공감 → 의외의 결과 → 궁금증 → 얻는 정보' 중 최소 2개의 장치를 결합해 클릭 이유를 만드세요. 공백 포함 약 25~38자를 목표로 하되, 후킹을 억지로 삭제해 짧게 만들지 마세요. **메인키워드는 가능한 한 제목 앞쪽에 자연스럽게 포함**하고, 키워드 뒤에는 클릭 이유가 바로 이어지게 하세요. 제목만 보고도 무슨 주제인지 알 수 있어야 하며, 본문에서 실제로 해결할 궁금증을 제목에 심으세요.
 - 혼합형: 검색 의도와 클릭성을 균형 있게 잡고 공백 포함 약 30~42자를 목표로 하세요. **메인키워드를 반드시 그대로 포함**한 뒤 가장 중요한 정보 1개 + 클릭 보조 요소 1개 정도까지만 사용하세요.
 - **절대 규칙: 추천 제목 3개 모두에 [메인키워드]를 정확히 그대로 포함하세요.** 입력 키워드/메인키워드를 다른 표현으로 바꾸거나 삭제하지 마세요.
 - 제목 생성 전에 메인키워드를 먼저 확정된 문자열로 인식하고, 제목 생성 과정에서 키워드 자체를 새로 선택하지 마세요.
+- 추가 검색 표현은 제목에 반드시 모두 넣지 마세요. 제목의 핵심은 SEO 메인키워드이며, 추가 검색 표현은 제목 약속과 자연스럽게 맞을 때 최대 1개만 보조적으로 사용할 수 있습니다.
 - 모든 유형에서 제목은 한 번에 읽히되, 지나치게 짧게 압축하지 마세요. 한 제목에 검색의도·조회·신청·지급·주의사항 등 여러 정보를 모두 나열하지 말고, 독자가 클릭할 핵심 이유 하나를 남기세요.
 - 제목에 콜론(:), 슬래시(/), 쉼표를 이용해 정보를 여러 개 나열하는 방식을 피하세요. 특히 'A 및 B: C부터 D까지' 같은 긴 나열형 제목을 만들지 마세요.
 - 제목에 '방법', '조회', '대상', '지급일'처럼 검색어를 넣더라도 핵심 의도에 필요한 것만 1~2개 선택하세요.
@@ -798,6 +870,7 @@ SEO 메인키워드: {analysis_payload.get("main_keyword") or analysis_payload.g
 메인키워드 선정 근거: {analysis_payload.get("main_keyword_evidence", "")}
 검색 의도: {analysis_payload.get("search_intent", "")}
 콘텐츠 GAP: {json.dumps(analysis_payload.get("content_gaps", []), ensure_ascii=False)}
+추가 검색 표현: {json.dumps(analysis_payload.get("extra_search_terms", []), ensure_ascii=False)}
 연관 키워드: {json.dumps(analysis_payload.get("related_keywords", []), ensure_ascii=False)}
 롱테일 키워드: {json.dumps(analysis_payload.get("long_tail_keywords", []), ensure_ascii=False)}
 검색광고 키워드 데이터: {json.dumps(analysis_payload.get("searchad_keyword_data", []), ensure_ascii=False)}
@@ -828,11 +901,22 @@ def write_with_ai(client, analysis_payload, writing_options):
 - 목표 분량 규칙: {writing_options.get("length", "최소 1500자")}
 - 선택된 제목: {selected_title}
 
-분량 규칙은 반드시 지키세요.
+분량 규칙은 반드시 지키되, 글자 수를 채우기 위해 의미 없는 내용을 늘리지 마세요.
 1) 모든 글은 공백 제외 약 1500자 이상을 기본 하한으로 합니다.
-2) HOME_FEED는 공백 제외 1500~2000자를 목표로 합니다. 너무 짧거나 2000자를 크게 넘기지 마세요.
-3) SEARCH는 공백 제외 3000자 이상을 목표로 합니다. 검색자가 필요한 정보를 충분히 설명하세요.
-4) HYBRID는 공백 제외 2500~3500자 이상을 목표로 하되 검색 의도와 홈판 가독성의 균형을 맞추세요.
+2) HOME_FEED는 공백 제외 1500~2000자를 목표로 합니다. 정보 밀도를 유지하면서 초반 후킹과 중반 전개가 살아 있어야 합니다.
+3) SEARCH는 공백 제외 3000자 이상을 목표로 합니다. 단순 반복으로 길이를 늘리지 말고 검색자가 실제로 묻는 질문을 충분히 해결하세요.
+4) HYBRID는 공백 제외 2500~3500자를 목표로 하되 검색 해결력과 홈판 가독성을 동시에 확보하세요.
+
+[검색형 작성 규칙]
+- 검색 노출 가능성을 높이는 핵심은 키워드 반복량이 아니라 '검색의도 충족 + 정보 충실성 + 문서 주제 집중도 + 최신성 + 독자에게 실제 도움이 되는 차별 정보'입니다.
+- 첫 1~2개 문단에서 검색자가 가장 궁금해할 답의 방향을 먼저 제시하세요. 서론을 길게 끌지 마세요.
+- 제목의 핵심 약속을 본문 초반에서 다시 확인하고, 그 약속을 해결하는 핵심 정보가 H2 흐름 안에서 빠짐없이 이어지게 하세요.
+- 핵심 질문별 답변은 서로 다른 문단/소제목으로 분리하고, 한 섹션에서 너무 많은 질문을 섞지 마세요.
+- 연관 키워드와 롱테일은 실제 의미가 맞을 때만 자연스럽게 사용하세요. 키워드 나열, 동의어 폭탄, 같은 표현의 반복은 금지합니다.
+- 검색자가 행동해야 하는 주제라면 일정/대상/조건/방법/금액/주의사항 중 실제로 필요한 항목을 검색 의도에 맞는 순서로 배치하세요. '신청 방법' 같은 행동 정보는 특별한 이유가 없으면 글 후반으로 미루지 마세요.
+- 경쟁문서와 겹치는 기본 정보만 나열하지 말고, 분석된 콘텐츠 GAP·최신 변경점·실제 행동에 도움이 되는 세부사항을 반드시 반영하세요.
+- 글 전체를 하나의 주제로 묶고, 제목과 관계없는 일반적인 팁으로 분량을 채우지 마세요.
+- 표는 비교/조건/일정처럼 표가 실제로 이해를 빠르게 만드는 경우에만 사용하세요.
 
 [검색형 작성 규칙]
 - 검색자가 실제로 원하는 답을 빠르게 찾을 수 있도록 작성하세요.
@@ -845,13 +929,19 @@ def write_with_ai(client, analysis_payload, writing_options):
 - 검색형은 정보 누락을 막기 위해 H2/H3, 표, 체크리스트, FAQ 등을 내용에 맞게 활용하세요.
 
 [홈판 작성 규칙]
-- 제목 → 첫 이미지 → 첫 문장 Hook의 연결을 강하게 만드세요.
+- 홈판은 '검색형 글을 짧게 만든 버전'이 아니라 홈 피드에서 스크롤을 멈추게 하고 끝까지 읽을 이유를 만드는 별도 편집 구조입니다.
+- 제목 → 첫 이미지 → 첫 문장 → 초반 정보가 하나의 약속처럼 이어져야 합니다. 제목에서 궁금증을 만들었다면 첫 문장에서 그 궁금증을 강화하고, 초반 20~30% 안에 작은 답 또는 반전을 제공하세요.
 - 첫 문장은 '안녕하세요', '오늘은 ~ 알아볼게요' 같은 일반적인 인사로 시작하지 마세요.
-- 첫 3문장은 상황/공감 → 반전·궁금증 → 이 글에서 얻을 것의 흐름을 우선하세요.
-- 제목은 반전·숫자·의외성·상황·경험을 조합한 클릭 유도형 약속을 지키세요.
-- 본문은 모바일에서 읽기 쉽도록 1~2문장 단락을 기본으로 하세요.
-- 홈판형 image_plan은 최소 5개 슬롯을 설계하세요. 실제로 의미가 없는 이미지를 억지로 추가하지 말고, 각 이미지에 본문상의 역할을 부여하세요.
-- 인용구는 핵심 문장이나 반전 포인트가 실제로 있을 때 초반과 중반에 자연스럽게 배치하세요.
+- 첫 3~5문장은 '상황/공감 → 의외의 사실 또는 문제 → 궁금증 확대 → 이 글에서 얻을 핵심' 흐름을 우선하세요.
+- 제목의 후킹 장치는 본문에서 실제 근거 또는 구체적인 정보로 회수하세요. 제목만 자극적이고 본문이 평범한 정보 나열로 끝나면 안 됩니다.
+- 홈판 본문은 한 문단 1~2문장, 짧은 문장과 조금 긴 설명을 섞어 모바일 리듬을 만드세요.
+- 초반에는 독자가 '그래서 뭐가 다른데?'라는 질문을 갖게 만들되, 답을 너무 늦게 미루지 마세요.
+- 중반에는 비교·실수하기 쉬운 부분·의외의 포인트·체크리스트 등 저장 가치가 있는 정보를 배치하세요.
+- 후반에는 독자가 바로 기억할 핵심 2~4개를 정리하고, 필요하면 '그래서 이렇게 하면 돼요' 식의 행동 가이드를 짧게 제시하세요.
+- 홈판형에서는 검색형처럼 모든 세부 정보를 과도하게 나열하지 말고, 하나의 핵심 스토리/각도를 끝까지 유지하세요.
+- 홈판형 image_plan은 최소 5개 슬롯을 설계하세요. ① 첫 화면 시선 정지 ② 문제/상황 ③ 핵심 반전 또는 정보 ④ 중간 비교/체크포인트 ⑤ 마지막 저장 가치가 있는 장면처럼 역할을 나누세요.
+- 이미지가 본문 내용과 무관한 장식으로 반복되지 않도록 하세요.
+- 인용구는 실제로 강한 한 문장이 있을 때만 사용하고 장식용으로 남발하지 마세요.
 
 [여행 정보·추천 콘텐츠 작성 규칙]
 - is_travel_content가 true이면 실제 방문 후기 작성자가 아니라 20년 차 여행 콘텐츠 편집자 관점의 '정보·추천형 여행글'로 작성하세요. 실제경험후기 로직은 사용하지 않습니다.
@@ -874,7 +964,7 @@ def write_with_ai(client, analysis_payload, writing_options):
 1) 선택된 제목이 글의 계약(약속)입니다. 본문 전체가 제목의 검색의도와 약속을 정확히 충족해야 합니다.
 2) 제목에 없는 새로운 주제로 옆길로 새지 마세요.
 3) 현재 시점의 할인율, 프로모션 기간, 할인코드, 카드 제휴, 가격, 이벤트명 등은 current_source_facts 또는 source_pages에서 근거가 확인된 것만 작성하세요.
-4) 근거 없는 최신 정보는 절대로 추측하지 마세요.
+4) 근거 없는 최신 정보는 절대로 추측하지 마세요. 공식 페이지에서 확인된 현재 상태가 기존에 널리 알려진 내용과 다르면 최신 확인 내용을 우선 반영하세요.
 5) 사용자가 직접 경험했다고 주어지지 않은 내용을 1인칭 체험처럼 쓰지 마세요.
 6) 아래에 [직접 경험]이 제공된 경우에만 해당 내용을 1인칭 경험담으로 자연스럽게 활용하세요. 경험에 포함되지 않은 날짜·금액·처리기간·신청과정·감정·결과를 임의로 추가하지 마세요.
 7) 직접 경험은 공식 정책/뉴스 사실과 구분하세요. '제가 실제로 해보니' 같은 표현은 사용자 경험에만 사용하고, 제도 자체의 조건·금액·대상 등은 공식 근거가 있는 경우에만 단정하세요.
@@ -889,12 +979,20 @@ def write_with_ai(client, analysis_payload, writing_options):
 14) FAQ는 3~5개입니다.
 
 [이미지 계획]
-- 기본은 실사 사진입니다.
+- 이미지 형식 선택값: {writing_options.get("image_format_preference", "AI_RECOMMEND")}
+- 분석 단계에서 추천한 이미지 형식과 글의 실제 소제목/본문을 함께 보고 image_plan을 설계하세요.
+- `image_type`은 반드시 PHOTO 또는 INFOGRAPHIC 중 하나로 반환하세요.
+- 사용자가 AI 추천을 선택한 경우에는 분석의 `image_format_recommendations`를 최대한 따르되, 최종 본문 내용과 맞지 않으면 본문 기준으로 조정하세요.
+- 사용자가 PHOTO를 선택한 경우 모든 이미지 슬롯을 PHOTO로 작성하세요.
+- 사용자가 INFOGRAPHIC을 선택한 경우 모든 이미지 슬롯을 INFOGRAPHIC으로 작성하세요. 단, 이미지가 의미 없는 슬롯은 억지로 만들지 말고 실제 정보 전달 목적을 부여하세요.
+- INFOGRAPHIC은 핵심 날짜·숫자·비교·조건·순서·체크포인트 등을 짧고 읽기 쉽게 시각화하세요. 긴 본문을 이미지에 그대로 복사하지 마세요. `visual_text`에는 이미지에 표시할 최소한의 한국어 문구만 3~8개 이내로 작성하세요. 근거 없는 숫자나 사실을 추가하지 마세요.
+- PHOTO는 실제 촬영한 듯한 장면으로 구성하고, 해당 소제목의 내용을 설명하는 장면을 우선하세요. 단순 장식용 풍경을 반복하지 마세요.
 - image_plan의 각 이미지는 실제 본문 위치를 가리키는 insert_after를 사용하세요.
-- article keyword와 이미지 검색어는 같지 않을 수 있습니다. 본문 장면을 실제로 보여줄 수 있는 영어 Pixabay 검색어를 생성하세요.
+- article keyword와 이미지 검색어는 같지 않을 수 있습니다. PHOTO일 때 본문 장면을 실제로 보여줄 수 있는 영어 Pixabay 검색어를 생성하세요. INFOGRAPHIC일 때는 Pixabay 검색어가 필요하지 않으면 빈 배열로 둘 수 있습니다.
 - source는 'user_photo', 'pixabay', 'ai', 'none' 중 하나를 사용하세요.
-- 가능하면 pixabay를 우선 후보로 하고, 적합한 사진이 없으면 ai를 사용하세요.
-- prompt에는 'no text, no typography, no infographic, no watermark'를 포함하세요.
+- PHOTO는 가능하면 pixabay를 우선 후보로 하고, 적합한 사진이 없으면 ai를 사용하세요. INFOGRAPHIC은 보통 ai를 사용하세요.
+- PHOTO prompt에는 'no text, no typography, no infographic, no watermark'를 포함하세요.
+- INFOGRAPHIC prompt에는 'clean Korean editorial infographic, concise Korean labels, minimal text, no watermark'를 포함하고, 이미지 안의 문구는 `visual_text`에 적은 내용만 사용하세요.
 - alt는 한국어로 작성하세요.
 
 [외부 링크]
@@ -906,6 +1004,10 @@ def write_with_ai(client, analysis_payload, writing_options):
 목표 분량: {writing_options["length"]}
 원본 입력 키워드: {analysis_payload["keyword"]}
 SEO 메인 키워드: {analysis_payload.get("main_keyword") or analysis_payload["keyword"]}
+추가 검색 표현: {json.dumps(analysis_payload.get("extra_search_terms", []), ensure_ascii=False)}
+추가 검색 표현 활용 규칙: 같은 대상을 가리키는 표현은 본문에서 자연스럽게 1회 이상 설명할 수 있지만, 모든 표현을 반복 삽입하지 마세요. 의미가 다르면 사용하지 마세요.
+참고/벤치마크 URL: {json.dumps(analysis_payload.get("benchmark", {}), ensure_ascii=False)}
+참고 URL 활용 규칙: 구조·정보 보강용으로 참고하되 문장을 복사하지 말고, 공식 근거가 필요한 사실은 current_source_facts/source_pages/official_sources와 교차 확인된 것만 확정적으로 작성하세요.
 메인 키워드 선정 근거: {analysis_payload.get("main_keyword_evidence", "")}
 추천 전략: {analysis_payload["recommended_strategy"]}
 선택된 제목: {selected_title}
@@ -917,6 +1019,7 @@ SEO 메인 키워드: {analysis_payload.get("main_keyword") or analysis_payload[
 
 검색 적합도: {analysis_payload.get("search_fit_score", 0)} / 홈판 적합도: {analysis_payload.get("home_feed_fit_score", 0)}
 추천 콘텐츠 유형: {analysis_payload.get("recommended_content_mode", "AUTO")}
+이미지 형식 분석 추천: {json.dumps(analysis_payload.get("image_format_recommendations", []), ensure_ascii=False, indent=2)}
 
 [최신 근거 데이터]
 {json.dumps(analysis_payload.get("current_source_facts", []), ensure_ascii=False, indent=2)}
@@ -935,10 +1038,15 @@ SEO 메인 키워드: {analysis_payload.get("main_keyword") or analysis_payload[
 
 메인키워드 SEO 규칙:
 - SEO 메인 키워드는 반드시 `{analysis_payload.get("main_keyword") or analysis_payload["keyword"]}`입니다. 이를 다른 키워드로 바꾸지 마세요.
-- 선택된 제목에는 SEO 메인키워드가 정확히 포함되어 있어야 합니다.
+- 선택된 제목은 메인키워드와 검색자가 얻는 핵심 가치를 함께 보여줘야 합니다.
 - 본문 전체는 이 메인키워드를 중심 주제로 유지하고, 도입부·핵심 본문·필요한 H2/H3·FAQ·결론에 자연스럽게 분산하세요.
-- 키워드를 억지로 반복하지 말고 문맥에 맞게 조사·어미와 함께 자연스럽게 사용하세요. 동일 문장을 반복해 키워드 횟수만 늘리지 마세요.
-- secondary_keywords와 long_tail_keywords는 메인키워드를 대체하는 용도가 아니라 보조 검색어로 사용하세요.
+- 메인키워드는 '정해진 횟수'를 채우는 방식으로 쓰지 마세요. 제목·도입부·핵심 섹션·결론에서 자연스럽게 등장하고, 그 사이에는 실제 검색자가 사용하는 관련 표현을 문맥에 맞게 사용하세요.
+- secondary_keywords와 long_tail_keywords는 실제 의미가 맞는 경우에만 사용하고, 같은 표현을 연속해서 반복하지 마세요.
+- 검색 노출을 위해 키워드 밀도를 인위적으로 높이거나 제목/소제목에 같은 단어를 반복하지 마세요. 오히려 주제 집중도를 떨어뜨릴 수 있습니다.
+- 메인키워드와 관련된 사람/장소/서비스/제도/상품명 등 구체적인 고유명사가 검색자료에서 확인된다면 필요한 곳에서 자연스럽게 명시하세요. 단, 근거 없는 엔티티를 추가하지 마세요.
+- 각 H2는 '하나의 질문에 대한 하나의 답' 역할을 갖게 하고, H2만 읽어도 글의 핵심 답변 구조가 보이도록 하세요.
+- 첫 300~500자 안에 검색의도와 제목 약속을 분명하게 해결하기 시작하세요. 핵심 답변을 결론 뒤로 숨기지 마세요.
+- 제목에서 숫자/날짜/금액/조건을 약속했다면 해당 근거가 있는 정보가 본문에 명확하게 있어야 합니다. 제목 약속이 본문에서 확인되지 않으면 제목 자체를 과장으로 취급하세요.
 
 제목 충실도 규칙:
 - 선택된 제목의 핵심 키워드와 약속을 본문 첫 부분부터 일관되게 유지하세요.
@@ -971,33 +1079,49 @@ FAQ는 3~5개.
 image_plan은 실제 제작 가능한 이미지 계획을 작성하세요.
 이미지 프롬프트는 영어로 작성하되 이미지 자체에 글자를 생성하도록 요구하지 마세요.
 
+최종 작성 전 내부 검수(출력에는 별도 설명하지 않음):
+A. 제목 약속: 제목의 핵심 약속이 본문 첫 30%부터 실제로 해결되고 있는가?
+B. 검색의도: 분석된 검색의 핵심 질문이 빠짐없이 답변됐는가?
+C. GAP: content_gaps가 실제 본문에 구체적인 정보로 반영됐는가?
+D. 최신성: 현재 근거가 필요한 숫자/날짜/가격/조건이 모두 근거 데이터와 일치하는가?
+E. 주제 집중도: 제목과 직접 관계없는 문단이 없는가?
+F. 자연스러움: 키워드 반복·동의어 나열·AI식 반복 문장이 없는가?
+G. 가독성: 모바일에서 1~3문장 단위로 끊기며 H2/H3 역할이 명확한가?
+H. 홈판이면: 첫 20~30%에 후킹 회수, 중반에 저장 가치, 마지막에 핵심 정리가 있는가?
+I. 검색형/혼합형이면: 핵심 답변이 뒤로 밀리지 않았고 행동 정보가 필요한 경우 앞쪽에 배치됐는가?
+J. FAQ: 본문을 그대로 반복하지 않고 실제로 남는 추가 질문을 해결하는가?
+검수에서 하나라도 부족하면 본문을 먼저 수정한 뒤 최종 JSON을 반환하세요.
+
 JSON으로만 답하세요.
 """
     return gemini_json(client, prompt, ARTICLE_SCHEMA, 12000)
 
 
 def seo_check(article, analysis):
-    text = article.get("body_markdown", "")
+    """키워드 개수보다 제목 약속·검색의도·구조·정보 밀도를 우선 검사합니다.
+    이 점수는 노출 보장이 아니라 발행 전 품질 게이트용입니다.
+    """
+    text = article.get("body_markdown", "") or ""
+    plain = re.sub(r"\s+", "", text)
     keyword = (article.get("main_keyword") or analysis.get("main_keyword") or analysis.get("keyword", "")).strip()
-    count = text.count(keyword) if keyword else 0
     selected_title = (article.get("seo_title") or article.get("home_title") or "").strip()
     title_keyword_ok = bool(keyword and keyword in selected_title)
+    title_words = [w for w in re.findall(r"[가-힣A-Za-z0-9]{2,}", selected_title) if len(w) >= 2]
+    title_overlap = sum(1 for w in title_words if w in text)
+
     gaps = article.get("gap_coverage", []) or []
     valid_status = {"반영", "완료", "충분히 반영", "해당 없음", "없음"}
     gap_statuses = [str(x.get("status", "")).strip() for x in gaps]
     if not analysis.get("content_gaps"):
-        gap_label = "콘텐츠 GAP 없음"
-        gap_ok = True
+        gap_label, gap_ok = "콘텐츠 GAP 없음", True
     elif gaps and all(any(v in st for v in valid_status) for st in gap_statuses):
-        gap_label = f"콘텐츠 GAP 반영 완료 ({len(gaps)}/{len(gaps)})"
-        gap_ok = True
+        gap_label, gap_ok = f"콘텐츠 GAP 반영 완료 ({len(gaps)}/{len(gaps)})", True
     elif gaps:
         done = sum(any(v in st for v in valid_status) for st in gap_statuses)
-        gap_label = f"콘텐츠 GAP 일부 반영 ({done}/{len(gaps)})"
-        gap_ok = False
+        gap_label, gap_ok = f"콘텐츠 GAP 일부 반영 ({done}/{len(gaps)})", False
     else:
-        gap_label = "콘텐츠 GAP 보완 필요"
-        gap_ok = False
+        gap_label, gap_ok = "콘텐츠 GAP 보완 필요", False
+
     char_count = len(re.sub(r"\s", "", text))
     mode = article.get("content_mode") or analysis.get("recommended_content_mode") or "SEARCH"
     if mode == "HOME_FEED":
@@ -1005,28 +1129,59 @@ def seo_check(article, analysis):
     elif mode == "SEARCH":
         length_ok = char_count >= 3000
     elif mode == "HYBRID":
-        length_ok = char_count >= 2500
+        length_ok = 2500 <= char_count <= 4000
     else:
         length_ok = char_count >= 1500
+
+    h2s = re.findall(r"^##\s+[^#].*$", text, flags=re.M)
+    h2_count = len([x for x in h2s if "목차" not in x])
+    toc_ok = "## 목차" in text and h2_count >= 3
+    intro = text[:min(len(text), 900)]
+    intro_keyword_ok = bool(keyword and keyword in intro)
+    search_intent_ok = bool(analysis.get("search_intent") and any(
+        phrase in text for phrase in [str(analysis.get("search_intent", ""))[:18]] if phrase
+    )) or bool(analysis.get("search_intent"))
+
+    # 문장 반복/과도한 동일 표현을 간단히 탐지합니다.
+    sentences = [re.sub(r"\s+", " ", x).strip() for x in re.split(r"(?<=[.!?다요죠])\s+", text) if len(x.strip()) >= 18]
+    normalized = [re.sub(r"[^가-힣A-Za-z0-9]", "", x) for x in sentences]
+    duplicates = len(normalized) - len(set(normalized))
+    duplicate_ok = duplicates <= max(1, len(normalized) // 40)
+
+    related = [str(x).strip() for x in (analysis.get("related_keywords", []) or []) if str(x).strip()]
+    related_hits = sum(1 for x in related[:10] if x in text)
+    related_ok = related_hits >= min(2, len(related)) if related else True
+
+    faq_count = len(article.get("faq", []) or [])
+    faq_ok = faq_count >= (2 if mode == "HOME_FEED" else 3)
+    image_min = 5 if mode == "HOME_FEED" else 3
+    image_ok = len(article.get("image_plan", []) or []) >= image_min
+
     checks = {
         "제목 메인키워드 포함": title_keyword_ok,
-        "본문 메인키워드 반영": count >= 2,
-        "검색의도 반영": bool(analysis.get("search_intent")),
+        "제목 약속 본문 반영": title_overlap >= max(1, min(3, len(title_words))),
+        "도입부 메인키워드 반영": intro_keyword_ok,
+        "검색의도 설계 존재": search_intent_ok,
         gap_label: gap_ok,
         "분량 규칙 충족": length_ok,
-        "FAQ 포함": len(article.get("faq", [])) >= 3,
-        "이미지 계획 포함": len(article.get("image_plan", [])) >= (5 if mode == "HOME_FEED" else 3),
+        "목차·H2 구조": toc_ok,
+        "연관 검색어 자연스러운 반영": related_ok,
+        "문장 중복 과다 없음": duplicate_ok,
+        "FAQ 구성": faq_ok,
+        "이미지 계획 포함": image_ok,
         "홈판 제목 별도 생성": bool(article.get("home_title")),
         "썸네일 문구 생성": bool(article.get("thumbnail_text")),
     }
     score = round(sum(checks.values()) / len(checks) * 100)
-    return score, checks, count, gaps, gap_label
+    return score, checks, text.count(keyword) if keyword else 0, gaps, gap_label
 
-def build_analysis_payload(keyword, category, trend, blog, news, web, images, shopping, benchmark, specific_post=None, blog_id="", current_web=None, source_pages=None, is_travel_content=False):
+def build_analysis_payload(keyword, category, trend, blog, news, web, images, shopping, benchmark, specific_post=None, blog_id="", current_web=None, source_pages=None, is_travel_content=False, extra_search_terms=None, additional_search_data=None):
     has_specific = bool(specific_post and specific_post.get("status") not in (None, "not_provided"))
     return {
         "keyword": keyword,
         "category": category,
+        "extra_search_terms": extra_search_terms or [],
+        "additional_search_data": additional_search_data or [],
         "is_travel_content": bool(is_travel_content),
         "trend": trend_summary(trend),
         "blog_results": compact_results(blog.get("items", []), ["title", "description", "bloggername", "bloggerlink", "postdate"]),
@@ -1049,19 +1204,73 @@ def build_analysis_payload(keyword, category, trend, blog, news, web, images, sh
     }
 
 def fetch_benchmark(url):
-    if not url.strip():
+    """사용자가 지정한 공개 참고 URL을 읽습니다.
+    블로그뿐 아니라 공식 홈페이지·공공기관·뉴스·안내 페이지도 허용합니다.
+    단, 이 페이지의 내용은 '참고/벤치마크' 데이터이며 사실 확정은 공식/검증 데이터에서만 합니다.
+    """
+    url = (url or "").strip()
+    if not url:
         return {"status": "not_provided"}
     try:
         r = requests.get(
-            url.strip(),
+            url,
             timeout=15,
-            headers={"User-Agent": "Mozilla/5.0 (compatible; ContentAnalyzer/1.0)"},
+            headers={"User-Agent": "Mozilla/5.0 (compatible; ContentAnalyzer/2.4)"},
         )
         r.raise_for_status()
-        text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", r.text)).strip()
-        return {"status": "ok", "url": url.strip(), "text": text[:7000]}
+        raw = r.text
+        raw = re.sub(r"<script[\s\S]*?</script>", " ", raw, flags=re.I)
+        raw = re.sub(r"<style[\s\S]*?</style>", " ", raw, flags=re.I)
+        text = clean_html(raw)
+        text = re.sub(r"\s+", " ", text).strip()
+        host = re.sub(r"^www\.", "", urlparse(url).netloc.lower())
+        if host.endswith("go.kr") or host.endswith("gov.kr") or host.endswith("korea.kr") or host.endswith("or.kr"):
+            source_type = "OFFICIAL_REFERENCE"
+        elif "blog.naver.com" in host or "m.blog.naver.com" in host:
+            source_type = "BLOG_REFERENCE"
+        elif "news" in host or "press" in host:
+            source_type = "NEWS_REFERENCE"
+        else:
+            source_type = "WEB_REFERENCE"
+        return {"status": "ok", "url": url, "source_type": source_type, "host": host, "text": text[:9000]}
     except Exception as e:
-        return {"status": "failed", "url": url.strip(), "error": str(e)}
+        return {"status": "failed", "url": url, "error": str(e)}
+
+def normalize_extra_search_terms(raw):
+    """쉼표/줄바꿈으로 입력한 추가 검색 표현을 중복 제거해 최대 8개까지 반환합니다."""
+    parts = re.split(r"[,\n;]+", raw or "")
+    out = []
+    seen = set()
+    for part in parts:
+        term = re.sub(r"\s+", " ", part).strip()
+        if not term:
+            continue
+        key = term.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(term)
+    return out[:8]
+
+def collect_additional_search_data(terms, client_id, client_secret):
+    """추가 검색 표현별로 네이버 검색 데이터를 수집합니다. 원본 키워드와 다른 표현의 실제 검색 맥락을 분석하기 위한 데이터입니다."""
+    result = []
+    for term in terms:
+        item = {"term": term, "blog": [], "web": [], "news": []}
+        try:
+            item["blog"] = compact_results(naver_search("blog", term, client_id, client_secret, display=10, sort="sim").get("items", []), ["title", "description", "bloggername", "postdate"])
+        except Exception:
+            pass
+        try:
+            item["web"] = compact_results(naver_search("webkr", term, client_id, client_secret, display=10, sort="sim").get("items", []), ["title", "description", "link"])
+        except Exception:
+            pass
+        try:
+            item["news"] = compact_results(naver_search("news", term, client_id, client_secret, display=5, sort="date").get("items", []), ["title", "description", "originallink", "pubDate"])
+        except Exception:
+            pass
+        result.append(item)
+    return result
 
 
 def fetch_naver_post(url):
@@ -1216,7 +1425,7 @@ length = {
 }.get(content_mode_request, "")
 
 if not gemini_key or not naver_id or not naver_secret:
-    st.title("🔎 네이버 콘텐츠 기회 분석기 V2.4.1")
+    st.title("🔎 네이버 콘텐츠 기회 분석기 V2.5 SEO/HOME")
     st.info("왼쪽 사이드바에 Gemini API Key와 Naver Client ID / Secret을 입력하면 시작할 수 있어요.")
     st.markdown("""
 ### 이 버전에서 하는 일
@@ -1276,9 +1485,16 @@ with st.expander("선택 옵션", expanded=False):
         placeholder="예: 50000000",
         disabled=not commercial,
     )
+    extra_search_terms_raw = st.text_area(
+        "추가 검색 표현(선택)",
+        placeholder="같은 주제를 사람들이 다르게 검색하는 표현이 있다면 입력하세요.\n예: 온돌기차, 온돌마루 열차, 서해금빛열차 온돌방",
+        help="오타·비슷한 명칭·띄어쓰기 차이·실제 검색 표현 등을 입력할 수 있습니다. 비워두어도 됩니다.",
+        height=90,
+    )
     benchmark_url = st.text_input(
-        "벤치마크 블로그 URL(선택)",
-        placeholder="분석하고 싶은 공개 URL이 있다면 입력",
+        "참고/벤치마크 URL(선택)",
+        placeholder="참고할 블로그·공식 홈페이지·뉴스·안내 페이지 URL",
+        help="블로그뿐 아니라 공식 홈페이지, 공공기관, 뉴스, 안내 페이지도 입력할 수 있습니다. 내용은 구조/정보 보강용으로 분석합니다.",
     )
 
 analyze_clicked = st.button(
@@ -1303,22 +1519,28 @@ if analyze_clicked:
             st.write("④ 웹문서 검색")
             web = naver_search("webkr", keyword, naver_id, naver_secret, display=10, sort="sim")
 
-            st.write("⑤ 최신·공식 웹문서 보강 검색")
+            extra_search_terms = normalize_extra_search_terms(extra_search_terms_raw)
+            additional_search_data = []
+            if extra_search_terms:
+                st.write("⑤ 추가 검색 표현 분석")
+                additional_search_data = collect_additional_search_data(extra_search_terms, naver_id, naver_secret)
+
+            st.write("⑥ 최신·공식 웹문서 보강 검색")
             current_web = current_web_searches(keyword, naver_id, naver_secret, commercial=commercial, is_travel_content=travel_content)
             official_candidates = official_candidate_results(current_web)
             source_pages = fetch_source_pages(current_web, limit=7)
             official_source_pages = fetch_source_pages(official_candidates, limit=5)
 
-            st.write("⑥ 이미지 검색")
+            st.write("⑦ 이미지 검색")
             images = naver_search("image", keyword, naver_id, naver_secret, display=10, sort="sim")
 
-            st.write("⑦ 지정 기존글 확인(선택)")
+            st.write("⑧ 지정 기존글 확인(선택)")
             blog_id = extract_blog_id(own_blog)
             specific_post = fetch_naver_post(specific_existing_url) if specific_existing_url.strip() else {"status": "not_provided"}
 
             shopping = None
             if commercial and shopping_category.strip():
-                st.write("⑧ 쇼핑인사이트")
+                st.write("⑨ 쇼핑인사이트")
                 shopping = naver_shopping_trend(
                     keyword, shopping_category.strip(), naver_id, naver_secret
                 )
@@ -1326,7 +1548,7 @@ if analyze_clicked:
             benchmark = fetch_benchmark(benchmark_url)
             searchad_data = {"keywordList": []}
             if st.session_state.get("searchad_access") and st.session_state.get("searchad_secret") and st.session_state.get("searchad_customer_id"):
-                st.write("⑨ 네이버 검색광고 키워드 도구")
+                st.write("⑩ 네이버 검색광고 키워드 도구")
                 try:
                     searchad_data = naver_searchad_keyword_tool(
                         keyword,
@@ -1341,13 +1563,14 @@ if analyze_clicked:
             payload = build_analysis_payload(
                 keyword, category, trend, blog, news, web, images,
                 shopping, benchmark, specific_post=specific_post, blog_id=blog_id,
-                current_web=current_web, source_pages=source_pages, is_travel_content=travel_content
+                current_web=current_web, source_pages=source_pages, is_travel_content=travel_content,
+                extra_search_terms=extra_search_terms, additional_search_data=additional_search_data
             )
             payload["searchad_keyword_data"] = compact_searchad_keywords(searchad_data, limit=50)
             payload["official_candidate_results"] = compact_results(official_candidates, ["title", "description", "link"])
             payload["official_source_pages"] = official_source_pages
 
-            st.write("⑩ AI 콘텐츠 전략 분석")
+            st.write("⑪ AI 콘텐츠 전략 분석")
             ai = analyze_with_ai(client, payload)
             payload.update(ai)
 
@@ -1384,6 +1607,7 @@ if analyze_clicked:
             st.session_state.selected_title = ""
             st.session_state.selected_title_reason = ""
             st.session_state.title_options = []
+            st.session_state.selected_image_format = "AI_RECOMMEND"
             st.session_state.pop("content_mode_radio", None)
             st.session_state.pop("selected_title_radio", None)
             st.session_state.article = None
@@ -1498,6 +1722,23 @@ if analysis:
             if selected_obj.get("angle"):
                 st.caption(f"선택 제목의 작성 각도: {selected_obj.get('angle')}")
 
+    st.markdown("### 🖼 이미지 생성 형식 선택")
+    st.caption("분석 결과를 기본값으로 사용할 수도 있고, 이번 글의 모든 이미지 형식을 사진 또는 인포그래픽으로 통일할 수도 있습니다.")
+    image_format_labels = {
+        "AI_RECOMMEND": "🤖 AI 추천 형식으로 구성",
+        "PHOTO": "📷 사진 이미지로 구성",
+        "INFOGRAPHIC": "📊 인포그래픽으로 구성",
+    }
+    if "selected_image_format" not in st.session_state:
+        st.session_state.selected_image_format = "AI_RECOMMEND"
+    selected_image_format = st.radio(
+        "이미지 형식",
+        ["AI_RECOMMEND", "PHOTO", "INFOGRAPHIC"],
+        format_func=lambda x: image_format_labels[x],
+        horizontal=True,
+        key="selected_image_format_radio",
+    )
+    st.session_state.selected_image_format = selected_image_format
 
     if analysis.get("freshness_warning"):
         st.warning("⚠️ 최신 정보 확인: " + analysis.get("freshness_warning"))
@@ -1611,6 +1852,20 @@ if analysis:
     with c1: st.markdown(card5, unsafe_allow_html=True)
     with c2: st.markdown(card6, unsafe_allow_html=True)
 
+    # 분석 단계에서 글의 각 구간에 어떤 이미지 형식이 더 적합한지 보여줍니다.
+    st.markdown("### 🖼 이미지 형식 분석")
+    st.caption("글의 소제목·본문 성격을 기준으로 사진과 인포그래픽 중 어떤 형식이 정보를 더 잘 전달하는지 분석한 결과입니다. 실제 작성 단계에서 전체 형식을 다시 선택할 수 있습니다.")
+    image_recs = analysis.get("image_format_recommendations", []) or []
+    if image_recs:
+        for rec in image_recs:
+            typ = str(rec.get("recommended_type", "PHOTO")).upper()
+            label = "📊 인포그래픽" if typ == "INFOGRAPHIC" else "📷 사진 이미지"
+            st.markdown(f"**{rec.get('image_id','-')}. {rec.get('target_section','')} → {label} ({rec.get('confidence',0)}%)**")
+            st.write(f"이유: {rec.get('reason','-')}")
+            st.caption(f"이미지 목적: {rec.get('visual_goal','-')}")
+    else:
+        st.info("이번 분석에서 별도의 이미지 형식 추천을 받지 못했습니다. 작성 단계에서 직접 선택할 수 있습니다.")
+
     st.divider()
     st.subheader("3. 글 작성")
 
@@ -1661,6 +1916,7 @@ if analysis:
                      "content_mode": selected_mode,
                      "selected_title": selected_title,
                      "selected_title_reason": st.session_state.get("selected_title_reason", ""),
+                     "image_format_preference": st.session_state.get("selected_image_format", "AI_RECOMMEND"),
                      "direct_experience_enabled": bool(st.session_state.get("direct_experience_enabled", False)),
                      "direct_experience_text": st.session_state.get("direct_experience_text", "").strip() if st.session_state.get("direct_experience_enabled", False) else ""},
                 )
@@ -1670,6 +1926,23 @@ if analysis:
                     article["home_title"] = selected_title
                 article["main_keyword"] = analysis.get("main_keyword") or analysis.get("keyword")
                 article["content_mode"] = st.session_state.get("selected_content_mode")
+
+                # 이미지 형식은 사용자의 선택을 최우선으로 하고, AI 추천 모드에서는 분석 결과를 기본값으로 적용합니다.
+                image_pref = st.session_state.get("selected_image_format", "AI_RECOMMEND")
+                rec_map = {str(x.get("image_id")): str(x.get("recommended_type", "PHOTO")).upper() for x in (analysis.get("image_format_recommendations", []) or [])}
+                for idx, img in enumerate(article.get("image_plan", []) or [], 1):
+                    if image_pref == "PHOTO":
+                        img["image_type"] = "PHOTO"
+                    elif image_pref == "INFOGRAPHIC":
+                        img["image_type"] = "INFOGRAPHIC"
+                    else:
+                        current = str(img.get("image_type", "")).upper()
+                        img["image_type"] = current if current in {"PHOTO", "INFOGRAPHIC"} else rec_map.get(str(img.get("image_id", idx)), "PHOTO")
+                    if img["image_type"] == "INFOGRAPHIC":
+                        img["source"] = "ai"
+                    elif img.get("source") not in {"user_photo", "pixabay", "ai", "none"}:
+                        img["source"] = "pixabay"
+                
                 article["character_count"] = len(re.sub(r"\s", "", article.get("body_markdown", "")))
                 article["target_length_rule"] = {
                     "HOME_FEED": "공백 제외 1500~2000자",
@@ -1884,11 +2157,16 @@ if article:
     image_plan = article.get("image_plan", []) or []
     if article.get("content_mode") == "HOME_FEED" and len(image_plan) < 5:
         st.warning(f"홈판형 이미지 계획이 {len(image_plan)}개입니다. 목표는 최소 5개 슬롯입니다.")
-    st.caption("본문을 먼저 분석한 뒤 이미지 역할·삽입 위치·Pixabay 검색어·AI 프롬프트를 함께 설계합니다. 홈판형은 최소 5개 슬롯을 목표로 합니다.")
+    st.caption("본문을 먼저 분석한 뒤 소제목별 이미지 형식(사진/인포그래픽)·역할·삽입 위치·검색어·AI 프롬프트를 함께 설계합니다. 홈판형은 최소 5개 슬롯을 목표로 합니다.")
     for i, item in enumerate(image_plan, 1):
         st.markdown(f"**{i}. 이미지 {item.get('image_id', i)} · {item.get('insert_after', item.get('position',''))}**")
-        st.write(f"역할: {item.get('role','-')} · 필요도: {item.get('need_score','-')}/3 · 출처: {item.get('source','-')}")
+        image_type = str(item.get("image_type", "PHOTO")).upper()
+        image_type_label = "📊 인포그래픽" if image_type == "INFOGRAPHIC" else "📷 사진 이미지"
+        st.write(f"형식: {image_type_label} · 역할: {item.get('role','-')} · 필요도: {item.get('need_score','-')}/3 · 출처: {item.get('source','-')}")
+        st.write(f"형식 선택 이유: {item.get('image_type_reason','-')}")
         st.write(f"목적: {item.get('purpose','-')}")
+        if item.get("visual_text"):
+            st.caption("이미지 핵심 문구: " + " / ".join(str(x) for x in item.get("visual_text", [])))
         if item.get('search_keywords'):
             st.caption("Pixabay 검색어: " + ", ".join(item.get('search_keywords', [])))
         st.caption("ALT: " + item.get('alt', '-'))
