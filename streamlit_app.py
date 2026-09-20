@@ -883,8 +883,10 @@ TITLE_SCHEMA = {
     "required": ["titles"],
 }
 
-def generate_titles_for_mode(client, analysis_payload, mode):
+def generate_titles_for_mode(client, analysis_payload, mode, direct_experience_enabled=False, direct_experience_text=""):
     mode_label = {"SEARCH": "검색형", "HOME_FEED": "홈판형", "HYBRID": "혼합형"}.get(mode, mode)
+    experience_status = "사용함" if direct_experience_enabled else "사용 안 함"
+    experience_text = direct_experience_text.strip() if direct_experience_enabled else "제공되지 않음"
     prompt = f"""
 당신은 네이버 블로그 제목 편집자입니다.
 아래 분석 데이터를 바탕으로 사용자가 직접 선택한 작성 유형 '{mode_label}'에 맞는 제목 3개만 만드세요.
@@ -911,6 +913,13 @@ def generate_titles_for_mode(client, analysis_payload, mode):
 - 추천 후보를 실제로 조사한 경우에만 'TOP 3', '추천 숙소', 특정 숙소명 등을 제목에 사용할 수 있습니다. 본문에서 실제로 다룰 수 없는 후보나 수치를 제목에 넣지 마세요.
 - 여행 제목은 '필수 체크 포인트 3가지' 자체를 반복하기보다, 독자가 최종적으로 무엇을 선택할 수 있는지를 보여주는 방향을 우선하세요.
 - 여행 콘텐츠의 3개 제목은 가능하면 ① 후보 추천형 ② 타겟 상황형 ③ 일정·선택 기준형으로 서로 다른 각도를 제시하세요.
+
+[직접 경험]
+- 사용 여부: {experience_status}
+- 경험 내용: {experience_text}
+- 직접 경험을 사용함으로 선택한 경우, 입력된 사실을 제목의 차별화 포인트로 자연스럽게 활용할 수 있습니다. 단, 모든 제목에 '직접 해보니' 같은 문구를 기계적으로 넣지 말고 제목의 약속과 잘 맞을 때만 활용하세요.
+- 입력되지 않은 경험·결과·감정·수치·날짜를 지어내지 마세요.
+- 직접 경험을 사용 안 함으로 선택한 경우, 개인의 방문·구매·사용 경험이 있는 것처럼 제목을 만들지 마세요.
 
 원본 입력 키워드: {analysis_payload.get("keyword", "")}
 SEO 메인키워드: {analysis_payload.get("main_keyword") or analysis_payload.get("keyword", "")}
@@ -1866,17 +1875,64 @@ if analysis:
         st.session_state.title_options = []
         st.session_state.pop("selected_title_radio", None)
 
+    st.markdown("#### 직접경험")
+    st.caption("글작성유형과는 별도 설정입니다. 사용함을 선택하면 입력한 경험을 추천 제목과 본문에 함께 반영합니다.")
+    def clear_title_selection():
+        st.session_state.selected_title = ""
+        st.session_state.selected_title_reason = ""
+        st.session_state.title_options = []
+        st.session_state.pop("selected_title_radio", None)
+
+    experience_values = ["OFF", "ON"]
+    current_experience_mode = "ON" if st.session_state.get("direct_experience_enabled", False) else "OFF"
+    selected_experience_mode = st.radio(
+        "직접경험 사용 여부",
+        experience_values,
+        index=experience_values.index(current_experience_mode),
+        format_func=lambda value: "사용함" if value == "ON" else "사용 안 함",
+        horizontal=True,
+        key="direct_experience_mode",
+    )
+    direct_experience_enabled = selected_experience_mode == "ON"
+    if direct_experience_enabled != st.session_state.get("direct_experience_enabled", False):
+        st.session_state.direct_experience_enabled = direct_experience_enabled
+        clear_title_selection()
+
+    direct_experience_text = ""
+    if direct_experience_enabled:
+        direct_experience_text = st.text_area(
+            "직접 경험 내용",
+            key="direct_experience_text",
+            height=180,
+            placeholder=(
+                "예: 오사카에서 실제로 쇼핑해봤는데 생각보다 별로였던 제품이 있었어요. "
+                "다시 간다면 안 살 것과 꼭 다시 살 것을 정리하고 싶어요.\n\n"
+                "※ 실제로 겪은 내용만 입력하세요. 구체적으로 적을수록 제목과 본문에 더 자연스럽게 반영됩니다."
+            ),
+            on_change=clear_title_selection,
+        ).strip()
+        st.caption("입력한 경험만 사실로 사용합니다. 날짜·금액·처리기간 등을 입력하지 않았다면 AI가 임의로 만들지 않습니다.")
+
     if st.button("🎯 선택한 유형의 추천 제목 보기", use_container_width=True):
-        with st.spinner("선택한 작성 유형에 맞는 제목 3개를 만드는 중..."):
-            try:
-                st.session_state.title_options = generate_titles_for_mode(client, analysis, selected_mode)
-                if st.session_state.title_options:
-                    st.session_state.selected_title = st.session_state.title_options[0].get("title", "")
-                    st.session_state.selected_title_reason = st.session_state.title_options[0].get("why", "")
-                else:
-                    st.warning("추천 제목을 생성하지 못했습니다.")
-            except Exception as e:
-                st.error(f"추천 제목 생성 중 오류가 발생했습니다: {e}")
+        if direct_experience_enabled and not direct_experience_text:
+            st.warning("직접경험을 사용하려면 경험 내용을 입력해 주세요.")
+        else:
+            with st.spinner("선택한 작성 유형에 맞는 제목 3개를 만드는 중..."):
+                try:
+                    st.session_state.title_options = generate_titles_for_mode(
+                        client,
+                        analysis,
+                        selected_mode,
+                        direct_experience_enabled=direct_experience_enabled,
+                        direct_experience_text=direct_experience_text,
+                    )
+                    if st.session_state.title_options:
+                        st.session_state.selected_title = st.session_state.title_options[0].get("title", "")
+                        st.session_state.selected_title_reason = st.session_state.title_options[0].get("why", "")
+                    else:
+                        st.warning("추천 제목을 생성하지 못했습니다.")
+                except Exception as e:
+                    st.error(f"추천 제목 생성 중 오류가 발생했습니다: {e}")
 
     title_options = st.session_state.get("title_options", []) or []
     if title_options:
@@ -2039,27 +2095,8 @@ if analysis:
     st.divider()
     st.subheader("3. 글 작성")
 
-    # 사용자가 실제로 겪은 경험을 선택적으로 글에 반영합니다.
-    # 경험 내용이 제공된 경우에만 1인칭 표현을 허용하고, AI가 임의의 체험을 만들지 않도록 합니다.
-    direct_experience = st.checkbox(
-        "✍️ 직접 경험 추가",
-        key="direct_experience_enabled",
-        help="직접 신청·구매·방문·사용한 경험을 입력하면 해당 내용을 1인칭 경험담으로 자연스럽게 반영합니다. 입력하지 않은 경험은 AI가 만들어내지 않습니다.",
-    )
-    direct_experience_text = ""
-    if direct_experience:
-        direct_experience_text = st.text_area(
-            "직접 경험 내용",
-            key="direct_experience_text",
-            height=180,
-            placeholder=(
-                "예: 이번에 본인부담상한액 초과금 환급 대상이 되어 직접 신청했어요. "
-                "온라인으로 신청했고, 신청 후 며칠 뒤 환급금이 실제로 입금됐어요. "
-                "신청 과정에서 어려웠던 점, 준비한 서류, 실제 걸린 시간 등을 자유롭게 적어주세요.\n\n"
-                "※ 정확한 날짜·금액·신청방법 등 기억나는 내용을 구체적으로 적을수록 좋아요."
-            ),
-        ).strip()
-        st.caption("입력한 경험만 사실로 사용합니다. 날짜·금액·처리기간 등을 입력하지 않았다면 AI가 임의로 만들지 않습니다.")
+    if st.session_state.get("direct_experience_enabled", False):
+        st.caption("직접경험이 추천 제목과 본문에 반영됩니다. 경험 내용을 바꾸려면 위의 ‘글 작성 유형 선택’ 영역에서 수정해 주세요.")
 
     if not st.session_state.get("selected_title"):
         st.warning("먼저 글 작성에 사용할 추천 제목을 하나 선택해 주세요.")
