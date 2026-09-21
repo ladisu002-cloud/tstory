@@ -25,6 +25,13 @@ st.set_page_config(
 
 CATEGORIES = ["리뷰", "맛집", "일상", "쇼핑정보", "여행정보", "핫이슈", "기타정보"]
 MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
+AI_PROVIDER_OPTIONS = ["GEMINI", "OPENAI", "HYBRID"]
+AI_PROVIDER_LABELS = {
+    "GEMINI": "Gemini — 분석/제목/본문",
+    "OPENAI": "OpenAI — 분석/제목/본문",
+    "HYBRID": "혼합 — Gemini 분석 + OpenAI 제목/본문",
+}
 
 def clean_html(text):
     return re.sub(r"<[^>]+>", "", text or "").replace("&quot;", '"').replace("&amp;", "&").strip()
@@ -625,7 +632,81 @@ ARTICLE_SCHEMA = {
     ],
 }
 
-def gemini_json(client, prompt, schema, max_tokens=8000, retries=3):
+def _openai_schema(schema):
+    """Gemini 스키마(대문자 타입)를 OpenAI JSON Schema 형식으로 변환합니다."""
+    if isinstance(schema, dict):
+        out = {}
+        for key, value in schema.items():
+            if key == "type" and isinstance(value, str):
+                out[key] = value.lower()
+            else:
+                out[key] = _openai_schema(value)
+        return out
+    if isinstance(schema, list):
+        return [_openai_schema(x) for x in schema]
+    return schema
+
+def openai_json(api_key, model, prompt, schema, max_tokens=8000, retries=2):
+    """OpenAI Responses API를 이용한 구조화 JSON 생성."""
+    if not api_key:
+        raise RuntimeError("OpenAI API Key가 설정되지 않았습니다.")
+    payload = {
+        "model": model,
+        "input": prompt,
+        "max_output_tokens": max_tokens,
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "naver_blog_content",
+                "strict": True,
+                "schema": _openai_schema(schema),
+            }
+        },
+    }
+    last_error = None
+    for attempt in range(retries):
+        try:
+            response = requests.post(
+                "https://api.openai.com/v1/responses",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json=payload,
+                timeout=180,
+            )
+            if not response.ok:
+                detail = response.text[:1200]
+                if response.status_code in (429, 500, 502, 503, 504) and attempt < retries - 1:
+                    time.sleep(2 + attempt * 2)
+                    continue
+                raise RuntimeError(f"OpenAI API 오류 HTTP {response.status_code}: {detail}")
+            data = response.json()
+            texts = []
+            for item in data.get("output", []) or []:
+                for content in item.get("content", []) or []:
+                    if content.get("type") == "output_text" and content.get("text"):
+                        texts.append(content["text"])
+            text = "".join(texts).strip()
+            if not text:
+                raise RuntimeError("OpenAI 응답에서 JSON 텍스트를 찾지 못했습니다.")
+            return json.loads(text)
+        except Exception as e:
+            last_error = e
+            if attempt < retries - 1 and ("429" in str(e) or "500" in str(e) or "503" in str(e)):
+                time.sleep(2 + attempt * 2)
+                continue
+            raise
+    raise RuntimeError(f"OpenAI 응답 처리 실패: {last_error}")
+
+def ai_json(client, prompt, schema, max_tokens=8000):
+    """선택한 AI 방식에 따라 Gemini/OpenAI를 호출합니다. HYBRID는 분석=Gemini, 제목/본문=OpenAI."""
+    mode = client.get("provider_mode", "GEMINI")
+    task = client.get("active_task", "analysis")
+    provider = ("GEMINI" if task == "analysis" else "OPENAI") if mode == "HYBRID" else mode
+    if provider == "OPENAI":
+        return openai_json(client.get("openai_key", ""), client.get("openai_model", OPENAI_MODEL), prompt, schema, max_tokens=max_tokens)
+    gemini_client = genai.Client(api_key=client.get("gemini_key", ""))
+    return gemini_json(gemini_client, prompt, schema, max_tokens=max_tokens)
+
+def ai_json(client, prompt, schema, max_tokens=8000, retries=3):
     """Gemini 호출. 일시적 429/503만 제한적으로 재시도하고 일일 quota 초과는 즉시 중단합니다."""
     import time
     import random
@@ -861,7 +942,7 @@ def analyze_with_ai(client, payload):
 
 JSON으로만 답하세요.
 """
-    return gemini_json(client, prompt, ANALYSIS_SCHEMA, 8500)
+    return ai_json(client, prompt, ANALYSIS_SCHEMA, 8500)
 
 
 TITLE_SCHEMA = {
@@ -935,7 +1016,7 @@ SEO 메인키워드: {analysis_payload.get("main_keyword") or analysis_payload.g
 
 JSON으로만 답하세요.
 """
-    result = gemini_json(client, prompt, TITLE_SCHEMA, 2500)
+    result = ai_json(client, prompt, TITLE_SCHEMA, 2500)
     main_keyword = (analysis_payload.get("main_keyword") or analysis_payload.get("keyword") or "").strip()
     titles = (result.get("titles", []) or [])[:3]
     # 모델이 규칙을 어겨 메인키워드를 누락시키더라도 제목 단계에서 키워드가 사라지지 않도록 최종 방어선을 둡니다.
@@ -1276,7 +1357,7 @@ J. FAQ: 본문을 그대로 반복하지 않고 실제로 남는 추가 질문�
 
 JSON으로만 답하세요.
 """
-    return gemini_json(client, prompt, ARTICLE_SCHEMA, 10000)
+    return ai_json(client, prompt, ARTICLE_SCHEMA, 10000)
 
 
 def seo_check(article, analysis):
@@ -1554,6 +1635,7 @@ def fetch_naver_post(url):
 # .env 값은 최초 기본값으로만 사용하고, 사용자가 저장한 값이 우선합니다.
 for _key, _env, _secret_paths in [
     ("gemini_key", "GEMINI_API_KEY", ("GEMINI_API_KEY", "gemini.api_key")),
+    ("openai_key", "OPENAI_API_KEY", ("OPENAI_API_KEY", "openai.api_key")),
     ("naver_id", "NAVER_CLIENT_ID", ("NAVER_CLIENT_ID", "naver.client_id")),
     ("naver_secret", "NAVER_CLIENT_SECRET", ("NAVER_CLIENT_SECRET", "naver.client_secret")),
     ("searchad_access", "NAVER_SEARCHAD_ACCESS_LICENSE", ("NAVER_SEARCHAD_ACCESS_LICENSE", "searchad.access_license")),
@@ -1571,14 +1653,19 @@ if "connection_test" not in st.session_state:
 
 with st.sidebar:
     st.header("⚙️ 설정")
-    st.caption("NAVER API HUB 방식으로 연결합니다. API 키는 이 브라우저 세션에서만 사용하며 GitHub에는 저장하지 않습니다.")
+    st.caption("AI API와 NAVER API를 이 브라우저 세션에서 설정해 사용할 수 있습니다. API 키 자체는 GitHub 코드에 저장하지 않습니다.")
 
     with st.form("api_settings_form", clear_on_submit=False):
-        st.text_input(
-            "Gemini API Key",
-            type="password",
-            key="gemini_key",
+        st.selectbox(
+            "AI 사용 방식",
+            AI_PROVIDER_OPTIONS,
+            format_func=lambda x: AI_PROVIDER_LABELS[x],
+            key="ai_provider",
         )
+        st.text_input("Gemini API Key", type="password", key="gemini_key")
+        st.text_input("OpenAI API Key", type="password", key="openai_key")
+        st.text_input("Gemini 모델명", key="gemini_model")
+        st.text_input("OpenAI 모델명", key="openai_model")
         st.text_input(
             "Naver Client ID",
             key="naver_id",
@@ -1603,7 +1690,7 @@ with st.sidebar:
         # 저장 버튼을 누른 순간 현재 입력값을 그대로 세션에 확정합니다.
         st.session_state.credentials_saved = True
         st.session_state.connection_test = None
-        st.success("설정이 현재 세션에 저장됐어요.")
+        st.success(f"설정이 현재 세션에 저장됐어요. · {AI_PROVIDER_LABELS.get(st.session_state.ai_provider, st.session_state.ai_provider)}")
 
     if st.session_state.credentials_saved:
         st.caption("🟢 저장된 API 설정을 사용 중입니다.")
@@ -1612,7 +1699,7 @@ with st.sidebar:
         naver_source = "Streamlit Secrets/환경변수에서 불러온 기본값" if not st.session_state.credentials_saved else "설정 화면에서 저장한 현재 세션값"
         st.caption(f"네이버 인증값 출처: {naver_source}")
 
-    if st.session_state.gemini_key and st.session_state.naver_id and st.session_state.naver_secret:
+    if provider_ready and st.session_state.naver_id and st.session_state.naver_secret:
         if st.button("🔌 네이버 API 연결 테스트", use_container_width=True):
             results = {}
             try:
@@ -1666,9 +1753,23 @@ with st.sidebar:
 
 # 실제 API 호출에는 세션에 저장된 값을 사용합니다.
 gemini_key = st.session_state.gemini_key
+openai_key = st.session_state.openai_key
 naver_id = st.session_state.naver_id
 naver_secret = st.session_state.naver_secret
 own_blog = st.session_state.own_blog
+
+ai_provider = st.session_state.get("ai_provider", "GEMINI")
+gemini_model = st.session_state.get("gemini_model", MODEL).strip() or MODEL
+openai_model = st.session_state.get("openai_model", OPENAI_MODEL).strip() or OPENAI_MODEL
+
+def build_ai_config():
+    return {
+        "provider_mode": ai_provider,
+        "gemini_key": gemini_key,
+        "gemini_model": gemini_model,
+        "openai_key": openai_key,
+        "openai_model": openai_model,
+    }
 
 # 실제 작성 유형은 분석 결과를 본 뒤 사용자가 직접 선택합니다.
 # 톤은 별도 선택 UI 없이 글쓰기 기본값으로 사용합니다.
@@ -1680,9 +1781,14 @@ length = {
     "HYBRID": "공백 제외 2500~3500자",
 }.get(content_mode_request, "")
 
-if not gemini_key or not naver_id or not naver_secret:
+provider_ready = (
+    (ai_provider == "GEMINI" and bool(gemini_key))
+    or (ai_provider == "OPENAI" and bool(openai_key))
+    or (ai_provider == "HYBRID" and bool(gemini_key) and bool(openai_key))
+)
+if not provider_ready or not naver_id or not naver_secret:
     st.title("🔎 네이버 콘텐츠 기회 분석기 V2.5 SEO/HOME")
-    st.info("왼쪽 사이드바에 Gemini API Key와 Naver Client ID / Secret을 입력하면 시작할 수 있어요.")
+    st.info("왼쪽 사이드바에서 사용할 AI 방식과 API Key, Naver Client ID / Secret을 입력하면 시작할 수 있어요.")
     st.markdown("""
 ### 이 버전에서 하는 일
 1. Creator Advisor에서 직접 선별한 키워드를 입력
@@ -1695,10 +1801,10 @@ if not gemini_key or not naver_id or not naver_secret:
 """)
     st.stop()
 
-client = genai.Client(api_key=gemini_key)
+client = build_ai_config()
 
 st.title("🔎 네이버 콘텐츠 기회 분석기")
-st.caption("Creator Advisor에서 직접 선별한 키워드를 넣으면, 네이버 데이터 → 콘텐츠 GAP → (선택) 벤치마크/기존글 비교 → 검색·홈판 전략 → 글 작성까지 연결합니다.")
+st.caption(f"Creator Advisor에서 직접 선별한 키워드를 넣으면, 네이버 데이터 → 콘텐츠 GAP → (선택) 벤치마크/기존글 비교 → 검색·홈판 전략 → 글 작성까지 연결합니다. · AI: {AI_PROVIDER_LABELS.get(ai_provider, ai_provider)}")
 
 if "analysis" not in st.session_state:
     st.session_state.analysis = None
@@ -1841,6 +1947,7 @@ if analyze_clicked:
             )
 
             st.write("⑪ AI 콘텐츠 전략 분석")
+            client["active_task"] = "analysis"
             ai = analyze_with_ai(client, payload)
             payload.update(ai)
 
@@ -2010,6 +2117,7 @@ if analysis:
         else:
             with st.spinner("선택한 작성 유형에 맞는 제목 3개를 만드는 중..."):
                 try:
+                    client["active_task"] = "title"
                     st.session_state.title_options = generate_titles_for_mode(
                         client,
                         analysis,
@@ -2207,6 +2315,7 @@ if analysis:
                     "SEARCH": "공백 제외 3000자 이상",
                     "HYBRID": "공백 제외 2500~3500자",
                 }[selected_mode]
+                client["active_task"] = "writing"
                 article = write_with_ai(
                     client,
                     analysis,
