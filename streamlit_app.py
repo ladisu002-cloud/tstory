@@ -947,6 +947,106 @@ JSON으로만 답하세요.
                 item["why"] = (str(item.get("why", "")).strip() + " 메인키워드를 제목에 고정했습니다.").strip()
     return titles
 
+def _compact_text(value, limit=1200):
+    """작성 단계 Gemini 입력용 텍스트를 길이 제한합니다."""
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "…"
+
+def build_writing_context(analysis_payload):
+    """분석 단계에서 수집한 원본 데이터를 글 작성용 핵심 근거로 압축합니다.
+
+    분석 단계에서는 충분한 원문을 수집할 수 있지만, 글 작성 단계에서
+    분석 전체 JSON/원문 HTML을 다시 보내면 Gemini TPM을 불필요하게 소모합니다.
+    글 작성에는 '글을 쓰는 데 필요한 사실'만 전달합니다.
+    """
+    a = analysis_payload or {}
+
+    def compact_list(values, item_limit=500, max_items=12):
+        out = []
+        for value in (values or [])[:max_items]:
+            if isinstance(value, dict):
+                row = {}
+                for k, v in value.items():
+                    if isinstance(v, list):
+                        row[k] = v[:8]
+                    else:
+                        row[k] = _compact_text(v, item_limit)
+                out.append(row)
+            else:
+                out.append(_compact_text(value, item_limit))
+        return out
+
+    source_pages = []
+    for page in (a.get("source_pages", []) or [])[:6]:
+        source_pages.append({
+            "title": _compact_text(page.get("title"), 180),
+            "url": _compact_text(page.get("url"), 500),
+            "text": _compact_text(page.get("text"), 2200),
+            "action_links": [
+                {
+                    "text": _compact_text(x.get("text"), 120),
+                    "url": _compact_text(x.get("url"), 500),
+                }
+                for x in (page.get("action_links", []) or [])[:5]
+            ],
+        })
+
+    official_sources = []
+    for src in (a.get("official_sources", []) or [])[:10]:
+        official_sources.append({
+            "name": _compact_text(src.get("name"), 180),
+            "url": _compact_text(src.get("url"), 500),
+            "purpose": _compact_text(src.get("purpose"), 500),
+            "verified_fact": _compact_text(src.get("verified_fact"), 900),
+            "source_type": _compact_text(src.get("source_type"), 100),
+            "actions": [
+                {
+                    "label": _compact_text(x.get("label"), 120),
+                    "url": _compact_text(x.get("url"), 500),
+                }
+                for x in (src.get("actions", []) or [])[:5]
+            ],
+        })
+
+    return {
+        "keyword": a.get("keyword", ""),
+        "main_keyword": a.get("main_keyword") or a.get("keyword", ""),
+        "main_keyword_evidence": _compact_text(a.get("main_keyword_evidence"), 1000),
+        "search_intent": _compact_text(a.get("search_intent"), 1200),
+        "recommended_strategy": a.get("recommended_strategy", ""),
+        "strategy_reason": _compact_text(a.get("strategy_reason"), 1200),
+        "recommended_outline": compact_list(a.get("recommended_outline"), 300, 12),
+        "content_gaps": compact_list(a.get("content_gaps"), 500, 12),
+        "current_time_extension_points": compact_list(a.get("current_time_extension_points"), 500, 10),
+        "new_content_opportunities": compact_list(a.get("new_content_opportunities"), 700, 8),
+        "related_keywords": compact_list(a.get("related_keywords"), 120, 20),
+        "long_tail_keywords": compact_list(a.get("long_tail_keywords"), 160, 20),
+        "extra_search_terms": compact_list(a.get("extra_search_terms"), 160, 12),
+        "title_patterns": compact_list(a.get("title_patterns"), 220, 8),
+        "current_status": a.get("current_status", {}) or {},
+        "freshness_warning": _compact_text(a.get("freshness_warning"), 1000),
+        "current_source_facts": compact_list(a.get("current_source_facts"), 1000, 15),
+        "official_sources": official_sources,
+        "source_pages": source_pages,
+        "benchmark": a.get("benchmark", {}) or {},
+        "existing_content_asset_summary": _compact_text(a.get("existing_content_asset_summary"), 1200),
+        "existing_content_relevance": _compact_text(a.get("existing_content_relevance"), 1000),
+        "existing_content_strengths": compact_list(a.get("existing_content_strengths"), 400, 8),
+        "existing_content_missing_or_extendable": compact_list(a.get("existing_content_missing_or_extendable"), 500, 10),
+        "cannibalization_note": _compact_text(a.get("cannibalization_note"), 800),
+        "recommended_source_post": _compact_text(a.get("recommended_source_post"), 500),
+        "home_feed_angle": _compact_text(a.get("home_feed_angle"), 900),
+        "search_fit_score": a.get("search_fit_score", 0),
+        "home_feed_fit_score": a.get("home_feed_fit_score", 0),
+        "recommended_content_mode": a.get("recommended_content_mode", ""),
+        "travel_checkpoints": compact_list(a.get("travel_checkpoints"), 300, 10),
+        "searchad_keyword_data": compact_list(a.get("searchad_keyword_data"), 300, 20),
+        "image_format_recommendations": compact_list(a.get("image_format_recommendations"), 500, 10),
+    }
+
+
 def write_with_ai(client, analysis_payload, writing_options):
     selected_title = writing_options.get("selected_title", "").strip()
     prompt = f"""
@@ -1106,17 +1206,8 @@ SEO 메인 키워드: {analysis_payload.get("main_keyword") or analysis_payload[
 추천 콘텐츠 유형: {analysis_payload.get("recommended_content_mode", "AUTO")}
 이미지 형식 분석 추천: {json.dumps(analysis_payload.get("image_format_recommendations", []), ensure_ascii=False, indent=2)}
 
-[현재 회차/신청 상태]
-{json.dumps(analysis_payload.get("current_status", {}), ensure_ascii=False, indent=2)}
-
-[최신 근거 데이터]
-{json.dumps(analysis_payload.get("current_source_facts", []), ensure_ascii=False, indent=2)}
-
-[실제 웹페이지 확인 데이터]
-{json.dumps(analysis_payload.get("source_pages", []), ensure_ascii=False, indent=2)}
-
-[전체 분석 데이터]
-{json.dumps(analysis_payload, ensure_ascii=False, indent=2)}
+[작성용 핵심 분석 데이터]
+{json.dumps(build_writing_context(analysis_payload), ensure_ascii=False, indent=2)}
 
 전략별 작성 규칙:
 - NEW_KEYWORD: 기존글을 전제로 하지 않고 현재 키워드의 검색의도·경쟁·최신 근거·콘텐츠 GAP을 중심으로 새 글을 작성하세요.
@@ -1185,7 +1276,7 @@ J. FAQ: 본문을 그대로 반복하지 않고 실제로 남는 추가 질문�
 
 JSON으로만 답하세요.
 """
-    return gemini_json(client, prompt, ARTICLE_SCHEMA, 12000)
+    return gemini_json(client, prompt, ARTICLE_SCHEMA, 10000)
 
 
 def seo_check(article, analysis):
