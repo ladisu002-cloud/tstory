@@ -704,9 +704,15 @@ def ai_json(client, prompt, schema, max_tokens=8000):
     if provider == "OPENAI":
         return openai_json(client.get("openai_key", ""), client.get("openai_model", OPENAI_MODEL), prompt, schema, max_tokens=max_tokens)
     gemini_client = genai.Client(api_key=client.get("gemini_key", ""))
-    return gemini_json(gemini_client, prompt, schema, max_tokens=max_tokens)
+    return gemini_json(
+        gemini_client,
+        prompt,
+        schema,
+        max_tokens=max_tokens,
+        model=client.get("gemini_model", MODEL),
+    )
 
-def ai_json(client, prompt, schema, max_tokens=8000, retries=3):
+def gemini_json(client, prompt, schema, max_tokens=8000, retries=3, model=MODEL):
     """Gemini 호출. 일시적 429/503만 제한적으로 재시도하고 일일 quota 초과는 즉시 중단합니다."""
     import time
     import random
@@ -715,7 +721,7 @@ def ai_json(client, prompt, schema, max_tokens=8000, retries=3):
     for attempt in range(retries):
         try:
             resp = client.models.generate_content(
-                model=MODEL,
+                model=model,
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     max_output_tokens=max_tokens,
@@ -1651,6 +1657,32 @@ if "credentials_saved" not in st.session_state:
 if "connection_test" not in st.session_state:
     st.session_state.connection_test = None
 
+# API 설정은 사이드바의 연결 테스트와 본문 작업 흐름 모두에서 사용합니다.
+# 먼저 계산해 두어, 사이드바가 provider_ready를 참조할 때도 항상 정의돼 있게 합니다.
+gemini_key = st.session_state.gemini_key
+openai_key = st.session_state.openai_key
+naver_id = st.session_state.naver_id
+naver_secret = st.session_state.naver_secret
+own_blog = st.session_state.own_blog
+
+ai_provider = st.session_state.get("ai_provider", "GEMINI")
+gemini_model = st.session_state.get("gemini_model", MODEL).strip() or MODEL
+openai_model = st.session_state.get("openai_model", OPENAI_MODEL).strip() or OPENAI_MODEL
+provider_ready = (
+    (ai_provider == "GEMINI" and bool(gemini_key))
+    or (ai_provider == "OPENAI" and bool(openai_key))
+    or (ai_provider == "HYBRID" and bool(gemini_key) and bool(openai_key))
+)
+
+def build_ai_config():
+    return {
+        "provider_mode": ai_provider,
+        "gemini_key": gemini_key,
+        "gemini_model": gemini_model,
+        "openai_key": openai_key,
+        "openai_model": openai_model,
+    }
+
 with st.sidebar:
     st.header("⚙️ 설정")
     st.caption("AI API와 NAVER API를 이 브라우저 세션에서 설정해 사용할 수 있습니다. API 키 자체는 GitHub 코드에 저장하지 않습니다.")
@@ -1751,26 +1783,6 @@ with st.sidebar:
         help="정확히 분석하고 싶은 과거 글이 있다면 입력하세요. 입력하면 이 글을 최우선 원본 자산으로 분석합니다.",
     )
 
-# 실제 API 호출에는 세션에 저장된 값을 사용합니다.
-gemini_key = st.session_state.gemini_key
-openai_key = st.session_state.openai_key
-naver_id = st.session_state.naver_id
-naver_secret = st.session_state.naver_secret
-own_blog = st.session_state.own_blog
-
-ai_provider = st.session_state.get("ai_provider", "GEMINI")
-gemini_model = st.session_state.get("gemini_model", MODEL).strip() or MODEL
-openai_model = st.session_state.get("openai_model", OPENAI_MODEL).strip() or OPENAI_MODEL
-
-def build_ai_config():
-    return {
-        "provider_mode": ai_provider,
-        "gemini_key": gemini_key,
-        "gemini_model": gemini_model,
-        "openai_key": openai_key,
-        "openai_model": openai_model,
-    }
-
 # 실제 작성 유형은 분석 결과를 본 뒤 사용자가 직접 선택합니다.
 # 톤은 별도 선택 UI 없이 글쓰기 기본값으로 사용합니다.
 tone = "자연스럽고 친근한 존댓말(~해요, ~랍니다)"
@@ -1781,11 +1793,6 @@ length = {
     "HYBRID": "공백 제외 2500~3500자",
 }.get(content_mode_request, "")
 
-provider_ready = (
-    (ai_provider == "GEMINI" and bool(gemini_key))
-    or (ai_provider == "OPENAI" and bool(openai_key))
-    or (ai_provider == "HYBRID" and bool(gemini_key) and bool(openai_key))
-)
 if not provider_ready or not naver_id or not naver_secret:
     st.title("🔎 네이버 콘텐츠 기회 분석기 V2.5 SEO/HOME")
     st.info("왼쪽 사이드바에서 사용할 AI 방식과 API Key, Naver Client ID / Secret을 입력하면 시작할 수 있어요.")
