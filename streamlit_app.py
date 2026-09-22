@@ -633,7 +633,11 @@ ARTICLE_SCHEMA = {
 }
 
 def _openai_schema(schema):
-    """Gemini 스키마(대문자 타입)를 OpenAI JSON Schema 형식으로 변환합니다."""
+    """Gemini 스키마를 OpenAI strict JSON Schema 형식으로 변환합니다.
+
+    OpenAI Structured Outputs의 strict 모드에서는 루트뿐 아니라 배열 items를
+    포함한 모든 object에 ``additionalProperties: false``가 필요합니다.
+    """
     if isinstance(schema, dict):
         out = {}
         for key, value in schema.items():
@@ -641,6 +645,14 @@ def _openai_schema(schema):
                 out[key] = value.lower()
             else:
                 out[key] = _openai_schema(value)
+        if out.get("type") == "object":
+            # Gemini 스키마에는 이 제약이 없지만 OpenAI strict Structured
+            # Outputs에서는 중첩 object까지 명시해야 합니다.
+            out["additionalProperties"] = False
+            # 이 앱의 출력 객체는 모든 필드를 소비하므로, strict 모드가 요구하는
+            # required 배열이 누락된 경우에도 스키마의 모든 속성을 요구합니다.
+            if "properties" in out and "required" not in out:
+                out["required"] = list(out["properties"])
         return out
     if isinstance(schema, list):
         return [_openai_schema(x) for x in schema]
