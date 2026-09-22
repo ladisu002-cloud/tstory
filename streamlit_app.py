@@ -709,20 +709,57 @@ def openai_json(api_key, model, prompt, schema, max_tokens=8000, retries=2):
     raise RuntimeError(f"OpenAI 응답 처리 실패: {last_error}")
 
 def ai_json(client, prompt, schema, max_tokens=8000):
-    """선택한 AI 방식에 따라 Gemini/OpenAI를 호출합니다. HYBRID는 분석=Gemini, 제목/본문=OpenAI."""
+    """
+    AI 공급자 선택부만 담당합니다. 글쓰기/분석 프롬프트와 입력 데이터는 공급자에 따라
+    바꾸지 않습니다. GEMINI는 기존 Gemini 경로를 그대로 사용하고, Gemini 일일 quota
+    초과가 실제로 발생한 경우에만 OpenAI를 대체 경로로 사용합니다.
+
+    OPENAI를 명시적으로 선택한 경우에만 처음부터 OpenAI를 호출합니다.
+    HYBRID는 기존처럼 분석/제목/본문을 서로 다른 모델로 나누지 않고 Gemini 우선으로
+    동작하며, quota 초과 시 OpenAI로 대체합니다. 이렇게 해야 API를 추가한 것 때문에
+    기존 Gemini 글쓰기 결과가 불필요하게 달라지지 않습니다.
+    """
     mode = client.get("provider_mode", "GEMINI")
-    task = client.get("active_task", "analysis")
-    provider = ("GEMINI" if task == "analysis" else "OPENAI") if mode == "HYBRID" else mode
-    if provider == "OPENAI":
-        return openai_json(client.get("openai_key", ""), client.get("openai_model", OPENAI_MODEL), prompt, schema, max_tokens=max_tokens)
+
+    if mode == "OPENAI":
+        return openai_json(
+            client.get("openai_key", ""),
+            client.get("openai_model", OPENAI_MODEL),
+            prompt,
+            schema,
+            max_tokens=max_tokens,
+        )
+
+    # GEMINI와 HYBRID는 기존 Gemini 호출을 그대로 유지합니다.
     gemini_client = genai.Client(api_key=client.get("gemini_key", ""))
-    return gemini_json(
-        gemini_client,
-        prompt,
-        schema,
-        max_tokens=max_tokens,
-        model=client.get("gemini_model", MODEL),
-    )
+    try:
+        return gemini_json(
+            gemini_client,
+            prompt,
+            schema,
+            max_tokens=max_tokens,
+            model=client.get("gemini_model", MODEL),
+        )
+    except RuntimeError as e:
+        # Gemini 일일 quota가 실제로 초과된 경우에만 OpenAI를 대체 호출합니다.
+        # 일반 오류/JSON 오류/일시적 서버 오류에는 OpenAI를 사용하지 않습니다.
+        message = str(e).upper()
+        quota_exceeded = (
+            "GEMINI API 일일 요청 한도를 초과했습니다" in str(e)
+            or "GENERATE_CONTENT_FREETIER_REQUESTS" in message
+            or "GENERATEREQUESTSPERDAYPERPROJECTPERMODEL" in message
+            or "GENERATE_REQUESTS_PER_DAY" in message
+            or "PERDAYPERPROJECTPERMODEL" in message
+        )
+        if quota_exceeded and client.get("openai_key", ""):
+            return openai_json(
+                client.get("openai_key", ""),
+                client.get("openai_model", OPENAI_MODEL),
+                prompt,
+                schema,
+                max_tokens=max_tokens,
+            )
+        raise
 
 def gemini_json(client, prompt, schema, max_tokens=8000, retries=3, model=MODEL):
     """Gemini 호출. 일시적 429/503만 제한적으로 재시도하고 일일 quota 초과는 즉시 중단합니다."""
