@@ -20,7 +20,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 st.set_page_config(
-    page_title="네이버 콘텐츠 기회 분석기 V2.7 SEO/GEO",
+    page_title="네이버 콘텐츠 기회 분석기 V2.9 SEO/GEO",
     page_icon="🔎",
     layout="wide",
 )
@@ -550,7 +550,7 @@ def compact_analysis_input(payload):
             continue
         if k in ("source_pages", "official_source_pages", "action_pages"):
             out[k] = [
-                {**p, "text": _compact_text(p.get("text"), 3000), "action_links": (p.get("action_links") or [])[:6]}
+                {**p, "text": _compact_text(p.get("text"), 6000 if p.get("user_provided") else 3000), "action_links": (p.get("action_links") or [])[:6]}
                 for p in (v or [])
             ]
         elif k == "specific_existing_post" and isinstance(v, dict) and v.get("text"):
@@ -563,6 +563,11 @@ def compact_analysis_input(payload):
 def compact_benchmark_for_prompt(benchmark):
     if not isinstance(benchmark, dict) or not benchmark.get("text"):
         return benchmark or {}
+    if benchmark.get("source_type") == "OFFICIAL_REFERENCE":
+        # 공식으로 지정된 URL의 본문은 official_source_pages에 이미 들어가므로 여기서는 요약만 보냅니다.
+        return {**benchmark, "text": _compact_text(benchmark.get("text"), 1500),
+                "text_note": "본문 전체는 official_source_pages의 '[입력 URL]' 항목을 참고하세요.",
+                "action_links": (benchmark.get("action_links") or [])[:6], "info_links": (benchmark.get("info_links") or [])[:8]}
     return {**benchmark, "text": _compact_text(benchmark.get("text"), 4000), "action_links": (benchmark.get("action_links") or [])[:6]}
 
 
@@ -1089,6 +1094,7 @@ def analyze_with_ai(client, payload):
 - 블로그/뉴스/일반 웹페이지는 제목 구성, 목차, 정보 배열, 독자 질문, 빠진 내용, 차별화 포인트를 분석하는 참고자료로 사용하세요. 그대로 베끼거나 문장을 재현하지 마세요.
 - 공식 홈페이지/공공기관 페이지라면 단순 벤치마크가 아니라 최신 사실의 보강 후보로 보고, 제공된 official_source_pages와 함께 대조하세요. 공식 페이지에서 확인된 핵심 사실은 current_source_facts와 official_sources에 반영하세요.
 - 참고 URL 하나가 제공됐다고 해서 그 페이지의 모든 주장을 사실로 확정하지 마세요. 공식 근거가 필요한 주제는 공식 페이지를 우선합니다.
+- 단, benchmark.source_type이 OFFICIAL_REFERENCE이면 사용자가 공식 홈페이지로 지정했거나 공공 도메인입니다. 이 페이지와 official_source_pages 중 user_provided가 true인 하위 페이지(일정·프로그램·교통·주차 등)의 내용은 공식 사실로 사용하고, 확인된 세부 정보(프로그램·시간·장소·요금·주차·셔틀 등)를 current_source_facts에 빠짐없이 기록하세요. 여기에 없는 정보만 '확인 필요'로 표시하세요.
 - 참고 URL에서 현재 글에 추가할 가치가 있는 정보가 발견되면 content_gaps, current_time_extension_points, new_content_opportunities에 구체적으로 기록하세요.
 
 기존 콘텐츠 자산 원칙:
@@ -1152,6 +1158,7 @@ def analyze_with_ai(client, payload):
 - current_status.status가 UPCOMING이면 **다음 신청 회차를 중심으로 작성하세요.** 직전 회차는 '지난 회차' 또는 비교 설명이 필요할 때만 짧게 언급하세요.
 - current_status.status가 ENDED이면 확인된 다음 회차가 없으므로 종료 사실을 명확히 하고, 추측으로 다음 회차를 만들지 마세요.
 - 제목에 '1차/2차/3차' 같은 회차를 넣을 때는 반드시 current_status와 current_source_facts/source_pages의 근거를 확인하세요.
+- current_status.type이 EVENT이면 신청 회차가 아니라 축제·행사의 개최 기간입니다. UPCOMING은 '개최 예정', ACTIVE는 '진행 중', ENDED는 '종료'로 해석하고, event_period의 기간은 확인된 사실로 사용하세요.
 - 사용자가 공식 홈페이지 URL을 입력한 경우에도 URL 자체를 제목의 주제로 삼지 말고, **그 페이지에서 현재 시점에 실제로 적용되는 신청 상태·일정·조건을 추출해 반영**하세요.
 
 현재 정보 검증:
@@ -1343,8 +1350,14 @@ def build_writing_context(analysis_payload):
             ],
         })
 
+    user_official_pages = [
+        {"title": _compact_text(p.get("title"), 120), "url": p.get("url", ""), "text": _compact_text(p.get("text"), 2500)}
+        for p in (a.get("official_source_pages", []) or []) if p.get("user_provided")
+    ][:6]
+
     return {
         "current_date": a.get("current_date") or date.today().isoformat(),
+        "user_official_pages": user_official_pages,
         "keyword": a.get("keyword", ""),
         "main_keyword": a.get("main_keyword") or a.get("keyword", ""),
         "main_keyword_evidence": _compact_text(a.get("main_keyword_evidence"), 1000),
@@ -1397,8 +1410,8 @@ def write_with_ai(client, analysis_payload, writing_options):
     current_date_kr = _korean_date(analysis_payload.get("current_date") or date.today().isoformat())
     mode = writing_options.get("content_mode", "AUTO")
     prompt = f"""
-당신은 네이버 블로그용 SEO 콘텐츠 작가이자 홈판 콘텐츠 편집자, 팩트체크 편집자입니다.
-아래 분석 결과와 '선택된 제목'을 기준으로 실제 발행 가능한 한국어 블로그 글을 작성하세요.
+당신은 이 주제를 잘 아는 네이버 블로거입니다. 이웃에게 "이건 알고 가면 좋아요" 하고 알려주듯 쓰는 정보형 블로그 글을 작성하세요.
+아래 분석 결과는 당신이 미리 조사해 둔 취재 노트이고, 독자에게 보여주는 글은 그 노트를 바탕으로 쓴 '블로그 글'입니다.
 이 글의 최우선 목표는 ① 네이버 검색 상위 노출 ② 네이버 홈판 노출 ③ 네이버 AI 브리핑·생성형 검색(GEO)에서의 인용입니다.
 
 [기본 정보]
@@ -1410,6 +1423,23 @@ def write_with_ai(client, analysis_payload, writing_options):
 - SEO 메인 키워드(고정): {main_keyword}
 - 원본 입력 키워드: {analysis_payload["keyword"]}
 - 카테고리: {writing_options["category"]}
+
+[글의 성격 — 보고서가 아니라 블로그 글]
+- 독자는 조사 과정이 아니라 결과가 궁금합니다. "무엇이 확인됐고 무엇이 확인 안 됐는지"를 설명하지 말고, "그래서 언제·어디서·어떻게 하면 좋은지"를 알려주세요.
+- 사실 확인은 글을 쓰기 전에 끝내는 작업입니다. 근거가 확인된 정보만 자신 있게 쓰고, 확인되지 않은 정보는 언급하지 말고 빼세요. 빠진 정보를 "아직 확인되지 않았어요", "확정된 것은 아니에요"라고 하나하나 설명하지 마세요.
+- 변동 가능성 안내는 글 전체에서 딱 한 번, 마무리 부분에 "방문 전 공식 홈페이지 공지를 한 번 더 확인해 보세요"처럼 짧게만 쓰세요.
+- 출처 표기도 최소화하세요. "공식 홈페이지 기준으로 정리했어요"는 기준일 줄 근처에 한 번이면 충분해요. 모든 문장에 "공식 페이지에 안내돼 있어요", "~로 표시돼 있어요"를 붙이지 마세요.
+- 소제목은 조사 항목이 아니라 독자가 궁금한 것으로 쓰세요.
+  - 좋은 예: '언제 가면 좋을까', '꼭 봐야 할 공연', '주차와 교통', '아이와 간다면'
+  - 나쁜 예: '공식 명칭과 일정 확인', '프로그램 확인', '공간 구분'
+- 정보를 나열만 하지 말고 블로거의 시선을 더하세요. "처음 간다면 ~부터 보는 걸 추천해요", "~할 땐 ~가 편해요", "~는 놓치기 쉬운데요"처럼 독자의 상황에 맞춘 팁과 추천을 섞으세요. 다만 직접 경험이 제공되지 않았다면 '가봤더니', '먹어보니' 같은 체험 표현은 쓰지 마세요.
+- 행사·장소·제품이라면 조사 노트에 있는 사실을 바탕으로 분위기와 장면이 떠오르게 묘사해도 좋아요(예: 어떤 공연인지, 어떤 사람들이 즐기는지). 노트에 없는 사실은 지어내지 마세요.
+
+[독자에게 절대 보이면 안 되는 표현]
+- 작업 과정·내부 데이터를 드러내는 말: '시스템', '데이터', '분석 결과', '검증', '교차 확인', '확정 검증', '근거', '자료에 따르면', '검색 과정', '회차 운영 상태', 'current_status', '조사해 보니'
+- 반복되는 유보 표현: '확인되지 않았어요', '단정하면 안 돼요', '확정된 것은 아니에요', '~로 표시돼 있지만', '~라는 사실과 ~는 다르거든요'
+- 과거 연도 자료를 언급하며 "그대로 믿으면 안 된다"고 설명하는 문장. 지난 자료는 쓰지 않으면 그만이에요.
+- 검색 표현·오타·명칭 차이를 설명하는 문장(예: "OO은 검색할 때 쓰는 표현이고 공식 명칭은 △△예요").
 
 [말투 — 반드시 지킬 문체]
 - 본문, 핵심 요약, FAQ 답변 모두 친근한 해요체로 씁니다.
@@ -1427,17 +1457,17 @@ def write_with_ai(client, analysis_payload, writing_options):
 
 [AI 브리핑·생성형 검색 인용 구조 — 모든 유형 공통]
 AI 요약은 문단 전체가 아니라 '그 자체로 완결된 한두 문장'을 가져갑니다. 아래 규칙으로 인용되기 쉬운 문장을 만드세요.
-1. 서론(2~4문단)이 끝난 바로 다음 줄에 `업데이트 기준일: {current_date_kr}` 한 줄을 넣으세요.
+1. 서론(2~4문단)이 끝난 바로 다음 줄에 `업데이트 기준일: {current_date_kr} (공식 홈페이지 기준)` 한 줄을 넣으세요. 공식 출처가 없는 주제라면 괄호 부분은 빼세요.
 2. SEARCH/HYBRID는 기준일 줄 다음에 아래 형식의 핵심 요약을 넣고, 그 뒤에 목차를 넣으세요.
    **📌 핵심 요약**
    - (완결 문장 1: 주어 + 핵심 사실 + 숫자/조건)
    - (완결 문장 2)
    - (완결 문장 3)
    HOME_FEED는 별도 핵심 요약 블록을 만들지 말고, 서론 마지막 문장에 핵심 결과를 한 문장으로 먼저 알려주세요.
-3. 번호가 붙은 각 H2 바로 아래 첫 문장은 그 소제목에 대한 '직답 문장'입니다. 40~100자, 주어(메인키워드 또는 제도·장소·제품의 고유명사)를 생략하지 말고, 그 문장만 따로 읽어도 뜻이 통하게 쓰세요.
+3. 번호가 붙은 각 H2 바로 아래 첫 문장은 그 소제목의 질문에 바로 답하는 문장입니다. 40~100자, 주어(메인키워드 또는 행사·장소·제도·제품명)를 넣어 그 문장만 따로 읽어도 뜻이 통하게 쓰되, 말하듯 자연스럽게 쓰세요. 예: "안동국제탈춤페스티벌은 9월 24일부터 10월 4일까지 11일 동안 열려요."
 4. 문장을 '이것은', '이는', '이렇게', '위에서', '앞서', '그래서'처럼 앞 문장에 기대는 지시어로 시작하지 마세요. 특히 H2 첫 문장에서는 금지입니다.
-5. 숫자·금액·기간·대상·조건은 근거가 확인된 경우에만 쓰고, 한 문장 안에 기준 또는 출처를 함께 적으세요. 예: "{current_date_kr} 기준, OO은 만 19~34세가 대상이에요(출처: 고용노동부)."
-6. 핵심 섹션마다 정의형("OO은 ~예요"), 조건형("~라면 ~해야 해요"), 비교형("A는 ~, B는 ~예요") 문장 중 하나 이상을 넣으세요.
+5. 숫자·금액·기간·대상·조건은 근거가 확인된 경우에만 쓰고, 쓸 때는 유보 없이 분명하게 쓰세요. 기관 발표처럼 출처가 신뢰를 더해주는 핵심 수치에만 괄호로 출처를 한 번 붙이세요(예: "(고용노동부 발표)"). 모든 문장에 출처나 기준을 붙이지 마세요.
+6. 핵심 섹션마다 정의형("OO은 ~예요"), 조건형("~라면 ~하는 게 좋아요"), 비교형("A는 ~, B는 ~예요") 문장 중 하나 이상을 자연스럽게 넣으세요.
 7. 제도·기관·장소·제품은 처음 나올 때 정식 명칭을 쓰고, 이후에는 약칭을 써도 됩니다.
 8. FAQ 질문은 실제로 검색창에 입력할 법한 구어체 질문으로 쓰고, 답변 첫 문장에 결론을 넣은 뒤 2~3문장으로 끝내세요.
 9. reader_questions(실제 독자 질문)를 우선 활용하세요. 본문 H2에서 답한 질문은 H2 직답 문장으로, 본문에서 다루지 못한 질문은 FAQ로 해결하세요. 같은 질문을 H2와 FAQ에 중복하지 마세요.
@@ -1492,10 +1522,12 @@ AI 요약은 문단 전체가 아니라 '그 자체로 완결된 한두 문장'�
 
 [팩트 규칙]
 1) 선택된 제목이 글의 계약입니다. 본문 전체가 제목의 약속을 충족해야 하고, 제목에 없는 주제로 옆길로 새지 마세요.
-2) 할인율, 프로모션 기간, 할인코드, 가격, 일정, 신청기간 등 바뀌는 정보는 current_source_facts 또는 source_pages에서 근거가 확인된 것만 쓰세요. 추측은 금지입니다.
+2) 할인율, 프로모션 기간, 할인코드, 가격, 일정, 신청기간 등 바뀌는 정보는 current_source_facts 또는 source_pages에서 근거가 확인된 것만 쓰세요. 추측은 금지입니다. 확인되지 않은 정보는 "확인 필요"라고 적지 말고 글에서 빼세요.
+2-1) freshness_warning, current_status, gap 분석 같은 조사 노트의 메모는 글쓴이 참고용입니다. 그 내용이나 표현을 본문에 옮기지 마세요.
 3) 공식 페이지의 최신 상태가 널리 알려진 내용과 다르면 최신 확인 내용을 우선하세요.
 4) current_status가 ACTIVE면 현재 회차, UPCOMING이면 다음 회차를 기준으로 쓰고, 끝난 회차를 현재처럼 쓰지 마세요.
-5) 참고/벤치마크 URL은 구조·정보 보강용입니다. 문장을 복사하지 말고, 사실은 공식 근거와 교차 확인된 것만 확정하세요.
+5) 참고/벤치마크 URL은 구조·정보 보강용입니다. 문장을 복사하지 말고, 사실은 공식 근거와 교차 확인된 것만 확정하세요. 단, benchmark.source_type이 OFFICIAL_REFERENCE이거나 user_official_pages에 있는 내용은 공식 사실로 사용하세요.
+7) current_status.type이 EVENT면 행사 기간 기준으로 '개최 예정/진행 중/종료'를 정확히 표현하세요.
 6) 애드센스 유도용 외부 링크는 쓰지 마세요. 쿠팡파트너스는 제품 구매 의도가 있을 때만 1개 슬롯을 제안하고, URL은 만들지 마세요.
 
 [직접 경험]
@@ -1507,7 +1539,8 @@ AI 요약은 문단 전체가 아니라 '그 자체로 완결된 한두 문장'�
 [메인키워드 SEO 규칙]
 - SEO 메인 키워드는 반드시 `{main_keyword}`입니다. 다른 키워드로 바꾸지 마세요.
 - 메인키워드는 도입부 첫 2문장 안, 핵심 요약, 핵심 H2 섹션, 마지막 정리에서 자연스럽게 등장하게 하세요. 정해진 횟수를 채우듯 반복하지 마세요.
-- secondary_keywords·long_tail_keywords·추가 검색 표현은 의미가 맞을 때만 쓰고, 키워드 나열이나 동의어 폭탄은 금지입니다. 추가 검색 표현 중 같은 대상을 가리키는 것은 본문에서 1회 정도 자연스럽게 설명할 수 있어요.
+- secondary_keywords·long_tail_keywords는 의미가 맞을 때만 쓰고, 키워드 나열이나 동의어 폭탄은 금지입니다.
+- 메인키워드나 추가 검색 표현이 공식 명칭과 글자가 다른 표현(오타·줄임말·띄어쓰기 차이)이라면, 본문에서는 공식 명칭을 쓰고 그 표현은 제목·태그에만 쓰세요. 본문에 꼭 넣어야 한다면 도입부에서 괄호 병기로 한 번만 쓰고(예: "안동국제탈춤페스티벌(안동탈춤축제)"), 명칭 차이를 설명하는 문장은 쓰지 마세요.
 - 검색 자료에서 확인된 사람·장소·서비스·제도·상품명 같은 고유명사는 필요한 곳에 정확히 쓰세요. 근거 없는 엔티티는 추가하지 마세요.
 - 제목에서 숫자/날짜/금액/조건을 약속했다면 그 근거가 본문에 명확히 있어야 합니다.
 
@@ -1538,6 +1571,7 @@ C. 숫자·날짜·가격·조건이 근거 데이터와 일치하고, 끝난 �
 D. 제목과 관계없는 문단이 없고, 키워드 반복·AI식 반복 문장이 없다.
 E. 기준일 줄, (SEARCH/HYBRID) 핵심 요약, H2별 직답 문장이 있다.
 F. 처음부터 끝까지 해요체를 유지한다.
+G. 조사 보고서가 아니라 블로그 글로 읽힌다. 유보·검증 표현이 반복되지 않고, 소제목이 독자의 궁금증으로 쓰여 있다.
 
 JSON으로만 답하세요.
 """
@@ -1637,6 +1671,16 @@ def seo_check(article, analysis):
     tone_ratio = (endings_haeyo / total_endings) if total_endings else 1.0
     tone_ok = tone_ratio >= 0.85
 
+    # 보고서체: 조사 과정·유보 표현이 본문에 새어 나왔는지 검사합니다.
+    report_phrases = [
+        "시스템", "검증", "교차 확인", "확인되지 않", "확정되지 않", "확정된 것은 아니", "단정하면 안",
+        "표시돼 있", "표시되어 있", "안내돼 있", "자료에 따르면", "검색 과정", "근거", "데이터",
+        "다시 확인해야", "확인해야 해요", "확인이 필요",
+    ]
+    report_hits = {ph: text.count(ph) for ph in report_phrases if ph in text}
+    report_total = sum(report_hits.values())
+    report_ok = report_total <= 3
+
     # 문장 반복/과도한 동일 표현을 간단히 탐지합니다.
     sentences = [re.sub(r"\s+", " ", x).strip() for x in re.split(r"(?<=[.!?다요죠])\s+", text) if len(x.strip()) >= 18]
     normalized = [re.sub(r"[^가-힣A-Za-z0-9]", "", x) for x in sentences]
@@ -1666,6 +1710,7 @@ def seo_check(article, analysis):
         "연관 검색어 자연스러운 반영": related_ok,
         "문장 중복 과다 없음": duplicate_ok,
         f"해요체 말투 유지 ({round(tone_ratio * 100)}%)": tone_ok,
+        (f"블로그 문체(보고서·유보 표현 {report_total}회" + (": " + ", ".join(list(report_hits)[:4]) if report_hits else "") + ")"): report_ok,
         "FAQ 구성": faq_ok,
         "태그 구성(메인키워드 포함)": tags_ok,
         "홈판 제목 별도 생성": bool(article.get("home_title")),
@@ -1725,6 +1770,22 @@ def derive_current_status(keyword,current_date,source_pages=None,official_source
             except Exception: continue
 
     if not found:
+        event = detect_event_period(texts, current_date)
+        if event:
+            s, e = event['start'], event['end']
+            if current_date < s:
+                state, label = 'UPCOMING', '개최 예정'
+            elif current_date <= e:
+                state, label = 'ACTIVE', '진행 중'
+            else:
+                state, label = 'ENDED', '종료'
+            period = f"{s.month}/{s.day}~{e.month}/{e.day}"
+            return {
+                'type': 'EVENT', 'status': state, 'current_round': '', 'current_round_state': label, 'next_round': '',
+                'event_period': {'start': s.isoformat(), 'end': e.isoformat(), 'source_url': event['url'], 'source_title': event['title'], 'evidence': event['snippet']},
+                'current_status_reason': f"현재 기준일 {current_date.isoformat()} 기준, 공식/지정 페이지에서 확인한 행사 기간({period})은 '{label}' 상태입니다.",
+                'rounds': [], 'status_evidence': all_status[:15],
+            }
         closed=sum(1 for x in all_status for e in x['evidence'] if e['state']=='CLOSED')
         opened=sum(1 for x in all_status for e in x['evidence'] if e['state']=='OPEN')
         state='ENDED' if closed and not opened else ('ACTIVE' if opened and not closed else 'UNKNOWN')
@@ -1774,37 +1835,140 @@ def build_analysis_payload(keyword, category, trend, blog, news, web, shopping, 
         "recommended_strategy": "PENDING" if has_specific else "NEW_KEYWORD",
     }
 
-def fetch_benchmark(url):
-    """사용자가 지정한 공개 참고 URL을 읽습니다.
-    블로그뿐 아니라 공식 홈페이지·공공기관·뉴스·안내 페이지도 허용합니다.
-    단, 이 페이지의 내용은 '참고/벤치마크' 데이터이며 사실 확정은 공식/검증 데이터에서만 합니다.
+INFO_LINK_TERMS = (
+    "일정", "프로그램", "공연", "행사", "개요", "소개", "안내", "오시는", "찾아오", "교통", "주차",
+    "셔틀", "입장", "요금", "관람", "티켓", "예매", "공지", "부스", "먹거리", "체험", "이용", "운영시간", "FAQ",
+)
+
+
+def _extract_info_links(raw, base_url, limit=12):
+    """사용자가 지정한 홈페이지에서 같은 사이트의 안내성 하위 페이지 링크(일정·프로그램·교통·주차 등)를 찾습니다."""
+    base_host = re.sub(r"^www\.", "", urlparse(base_url).netloc.lower())
+    out, seen = [], {base_url.rstrip("/")}
+    for m in re.finditer(r"""<a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)</a>""", raw or "", flags=re.I):
+        href = m.group(1).strip()
+        anchor = re.sub(r"\s+", " ", clean_html(m.group(2))).strip()
+        if not href or not anchor or len(anchor) > 30:
+            continue
+        if href.lower().startswith(("javascript:", "mailto:", "tel:", "#")):
+            continue
+        full = urljoin(base_url, href)
+        host = re.sub(r"^www\.", "", urlparse(full).netloc.lower())
+        if host != base_host or re.search(r"\.(pdf|hwp|jpg|jpeg|png|zip)$", full, re.I):
+            continue
+        if not any(t.lower() in anchor.lower() for t in INFO_LINK_TERMS):
+            continue
+        key = full.split("#")[0].rstrip("/")
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"text": anchor, "url": full})
+        if len(out) >= limit:
+            break
+    return out
+
+
+def fetch_benchmark(url, force_official=False):
+    """사용자가 지정한 공개 URL을 읽습니다.
+    - force_official=True(사용자가 '공식 홈페이지'로 표시)면 공식 근거로 취급합니다.
+    - 공공 도메인(go.kr 등)은 자동으로 공식 근거로 취급합니다.
+    - 같은 사이트의 일정·프로그램·교통·주차 등 안내 하위 페이지 링크도 함께 찾아 둡니다.
     """
     url = (url or "").strip()
     if not url:
         return {"status": "not_provided"}
     try:
-        r = requests.get(
-            url,
-            timeout=15,
-            headers={"User-Agent": "Mozilla/5.0 (compatible; ContentAnalyzer/2.4)"},
-        )
-        r.raise_for_status()
-        raw = r.text
+        raw = _http_get_text(url, timeout=15)
+        if not raw:
+            return {"status": "failed", "url": url, "error": "페이지를 불러오지 못했습니다."}
         raw = re.sub(r"<script[\s\S]*?</script>", " ", raw, flags=re.I)
         raw = re.sub(r"<style[\s\S]*?</style>", " ", raw, flags=re.I)
         text, links = _extract_page_text_and_links(raw, url)
+        info_links = _extract_info_links(raw, url)
         host = re.sub(r"^www\.", "", urlparse(url).netloc.lower())
-        if host.endswith("go.kr") or host.endswith("gov.kr") or host.endswith("korea.kr") or host.endswith("or.kr"):
+        if force_official or host.endswith(("go.kr", "gov.kr", "korea.kr", "or.kr")):
             source_type = "OFFICIAL_REFERENCE"
-        elif "blog.naver.com" in host or "m.blog.naver.com" in host:
+        elif "blog.naver.com" in host:
             source_type = "BLOG_REFERENCE"
         elif "news" in host or "press" in host:
             source_type = "NEWS_REFERENCE"
         else:
             source_type = "WEB_REFERENCE"
-        return {"status": "ok", "url": url, "source_type": source_type, "host": host, "text": text[:9000], "action_links": links}
+        return {
+            "status": "ok", "url": url, "source_type": source_type, "host": host,
+            "user_marked_official": bool(force_official),
+            "text": text[:9000], "action_links": links, "info_links": info_links,
+            "note": "" if len(text) >= 300 else "본문 텍스트가 거의 없습니다. 내용이 이미지·자바스크립트로 표시되는 페이지일 수 있습니다.",
+        }
     except Exception as e:
         return {"status": "failed", "url": url, "error": str(e)}
+
+
+def fetch_benchmark_subpages(benchmark, cache, limit=8):
+    """사용자가 지정한 URL의 안내 하위 페이지(일정·프로그램·교통·주차 등)를 동시에 읽습니다."""
+    links = (benchmark or {}).get("info_links", [])[:limit]
+    if not links:
+        return []
+    raws = fetch_raw_pages([x["url"] for x in links], cache)
+    pages = []
+    for link in links:
+        raw = raws.get(link["url"])
+        if not raw:
+            continue
+        text, action_links = _extract_page_text_and_links(raw, link["url"])
+        if text and len(text) >= 100:
+            pages.append({
+                "title": f"[입력 URL 하위] {link['text']}", "url": link["url"],
+                "text": text[:9000], "action_links": action_links, "user_provided": True,
+            })
+    return pages
+
+
+EVENT_RANGE_PATTERN = re.compile(
+    r"(?:(20\d{2})\s*(?:년|[./-])\s*)?(\d{1,2})\s*(?:월|[./])\s*(\d{1,2})\s*(?:일|\.)?(?:\s*\([^)]{1,4}\))?"
+    r"\s*(?:~|∼|～|–|—|-|부터)\s*"
+    r"(?:(20\d{2})\s*(?:년|[./-])\s*)?(?:(\d{1,2})\s*(?:월|[./])\s*)?(\d{1,2})\s*일?"
+)
+EVENT_CONTEXT = re.compile(r"기간|일정|일시|개최|축제|행사|운영|개막|페스티벌|박람회|전시")
+
+
+def detect_event_period(texts, current_date):
+    """축제·행사의 개최 기간(예: 9월 24일~10월 4일)을 찾아 오늘 날짜와 비교합니다.
+    texts: [(title, url, text, is_official)]
+    """
+    from collections import Counter
+    votes, official_votes, info = Counter(), Counter(), {}
+    for title, url, text, is_official in texts:
+        clean = re.sub(r"\s+", " ", text or "")
+        for m in EVENT_RANGE_PATTERN.finditer(clean):
+            before = clean[max(0, m.start() - 40):m.start()]
+            if not EVENT_CONTEXT.search(before):
+                continue
+            try:
+                y1 = int(m.group(1) or current_date.year)
+                sm, sd = int(m.group(2)), int(m.group(3))
+                em = int(m.group(5) or sm); ed = int(m.group(6))
+                y2 = int(m.group(4) or y1)
+                start = date(y1, sm, sd); end = date(y2, em, ed)
+                if end < start and not m.group(4):
+                    end = date(y1 + 1, em, ed)
+                if not (0 <= (end - start).days <= 120):
+                    continue
+                if abs((start - current_date).days) > 400:
+                    continue
+            except Exception:
+                continue
+            key = (start, end)
+            votes[key] += 1
+            if is_official:
+                official_votes[key] += 1
+            info.setdefault(key, {"url": url, "title": title, "snippet": clean[max(0, m.start() - 40):m.end() + 40]})
+    if not votes:
+        return None
+    # 공식 페이지에서 찾은 기간이 있으면 뉴스·블로그의 기간(작년 일정 등)보다 항상 우선합니다.
+    (start, end), _ = (official_votes or votes).most_common(1)[0]
+    return {"start": start, "end": end, **info[(start, end)]}
+
 
 def normalize_extra_search_terms(raw):
     """쉼표/줄바꿈으로 입력한 추가 검색 표현을 중복 제거해 최대 8개까지 반환합니다."""
@@ -2024,7 +2188,7 @@ length = {
 }.get(content_mode_request, "")
 
 if not provider_ready or not naver_id or not naver_secret:
-    st.title("🔎 네이버 콘텐츠 기회 분석기 V2.7 SEO/GEO")
+    st.title("🔎 네이버 콘텐츠 기회 분석기 V2.9 SEO/GEO")
     st.info("왼쪽 사이드바에서 사용할 AI 방식과 API Key, Naver Client ID / Secret을 입력하면 시작할 수 있어요.")
     st.markdown("""
 ### 이 버전에서 하는 일
@@ -2103,7 +2267,13 @@ with st.expander("선택 옵션", expanded=False):
     benchmark_url = st.text_input(
         "참고/벤치마크 URL(선택)",
         placeholder="참고할 블로그·공식 홈페이지·뉴스·안내 페이지 URL",
-        help="블로그뿐 아니라 공식 홈페이지, 공공기관, 뉴스, 안내 페이지도 입력할 수 있습니다. 내용은 구조/정보 보강용으로 분석합니다.",
+        help="블로그뿐 아니라 공식 홈페이지, 공공기관, 뉴스, 안내 페이지도 입력할 수 있습니다. 같은 사이트의 일정·프로그램·교통·주차 안내 페이지까지 함께 확인합니다.",
+    )
+    benchmark_is_official = st.checkbox(
+        "이 URL은 공식 홈페이지예요 (내용을 공식 사실로 사용)",
+        value=False,
+        disabled=not benchmark_url.strip(),
+        help="축제·행사 공식 사이트처럼 .kr/.com 주소라 자동으로 공식 판별이 안 되는 경우 체크하세요. go.kr·or.kr 등 공공 도메인은 자동으로 공식 처리됩니다.",
     )
 
 analyze_clicked = st.button(
@@ -2181,10 +2351,32 @@ if analyze_clicked:
             ]
             top_blog_structures = build_top_blog_structures(blog_items, page_cache, limit=5)
 
-            benchmark = fetch_benchmark(benchmark_url)
+            benchmark = fetch_benchmark(benchmark_url, force_official=benchmark_is_official)
+            if benchmark.get("status") == "failed":
+                st.warning(f"입력한 URL을 읽지 못했어요: {benchmark.get('error','')}")
+            elif benchmark.get("note"):
+                st.warning(f"입력한 URL: {benchmark['note']}")
+            if benchmark.get("status") == "ok":
+                subpages = []
+                if benchmark.get("info_links"):
+                    st.write(f"⑤ 입력한 URL의 안내 하위 페이지 확인 ({len(benchmark['info_links'][:8])}개: 일정·프로그램·교통·주차 등)")
+                    subpages = fetch_benchmark_subpages(benchmark, page_cache, limit=8)
+                if benchmark.get("source_type") == "OFFICIAL_REFERENCE":
+                    main_page = {
+                        "title": "[입력 URL] 공식 홈페이지", "url": benchmark["url"], "text": benchmark.get("text", ""),
+                        "action_links": benchmark.get("action_links", []), "user_provided": True,
+                    }
+                    merged, seen_urls = [], set()
+                    for p in [main_page] + subpages + official_source_pages:
+                        if p["url"] in seen_urls:
+                            continue
+                        seen_urls.add(p["url"]); merged.append(p)
+                    official_source_pages = merged
+                else:
+                    source_pages = subpages + source_pages
             action_pages = []
             if action_limit > 0:
-                st.write("⑤ 신청·예약 링크 상태 확인")
+                st.write("⑥ 신청·예약 링크 상태 확인")
                 action_seed_pages = list(official_source_pages) + list(source_pages[:6])
                 if benchmark.get("status") == "ok":
                     action_seed_pages.append(benchmark)
@@ -2195,14 +2387,14 @@ if analyze_clicked:
 
             shopping = None
             if commercial and shopping_category.strip():
-                st.write("⑥ 쇼핑인사이트")
+                st.write("⑦ 쇼핑인사이트")
                 shopping = naver_shopping_trend(
                     keyword, shopping_category.strip(), naver_id, naver_secret
                 )
 
             searchad_data = {"keywordList": []}
             if st.session_state.get("searchad_access") and st.session_state.get("searchad_secret") and st.session_state.get("searchad_customer_id"):
-                st.write("⑦ 네이버 검색광고 키워드 도구")
+                st.write("⑧ 네이버 검색광고 키워드 도구")
                 try:
                     searchad_data = naver_searchad_keyword_tool(
                         keyword,
@@ -2232,7 +2424,7 @@ if analyze_clicked:
                 official_source_pages=official_source_pages, action_pages=action_pages, benchmark=benchmark
             )
 
-            st.write(f"⑧ AI 콘텐츠 전략 분석 (자료 수집 {time.time() - analysis_started:.0f}초)")
+            st.write(f"⑨ AI 콘텐츠 전략 분석 (자료 수집 {time.time() - analysis_started:.0f}초)")
             client["active_task"] = "analysis"
             ai = analyze_with_ai(client, payload)
             payload.update(ai)
