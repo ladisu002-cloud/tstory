@@ -11,8 +11,13 @@ from datetime import date, timedelta
 from urllib.parse import urlparse, urljoin
 from concurrent.futures import ThreadPoolExecutor
 from html import unescape as html_unescape
+import sys
+import tempfile
+import subprocess
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
+from naver_editor import build_editor_content, playwright_available
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
@@ -20,7 +25,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 st.set_page_config(
-    page_title="네이버 콘텐츠 기회 분석기 V3.1 SEO/GEO",
+    page_title="네이버 콘텐츠 기회 분석기 V3.2 SEO/GEO",
     page_icon="🔎",
     layout="wide",
 )
@@ -2253,7 +2258,7 @@ length = {
 }.get(content_mode_request, "")
 
 if not provider_ready or not naver_id or not naver_secret:
-    st.title("🔎 네이버 콘텐츠 기회 분석기 V3.1 SEO/GEO")
+    st.title("🔎 네이버 콘텐츠 기회 분석기 V3.2 SEO/GEO")
     st.info("왼쪽 사이드바에서 사용할 AI 방식과 API Key, Naver Client ID / Secret을 입력하면 시작할 수 있어요.")
     st.markdown("""
 ### 이 버전에서 하는 일
@@ -2933,6 +2938,41 @@ if analysis:
             except Exception as e:
                 st.error(f"글 작성 중 오류가 발생했습니다: {e}")
 
+def render_rich_copy_button(html_body, plain_text):
+    """서식(소제목·굵게·표·링크)을 유지한 채 클립보드에 복사하는 버튼입니다."""
+    data = json.dumps({"h": html_body, "t": plain_text}, ensure_ascii=False).replace("</", "<\\/")
+    components.html(
+        """
+<div style="font-family:sans-serif;">
+<button id="copyBtn" style="padding:8px 14px;border:1px solid #d1d5db;border-radius:8px;background:#fff;cursor:pointer;font-weight:600;">📋 서식 포함 복사</button>
+<span id="copyMsg" style="margin-left:8px;font-size:13px;color:#16a34a;"></span>
+<div id="copySrc" contenteditable="true" style="position:absolute;left:-99999px;top:0;"></div>
+</div>
+<script>
+const d = """ + data + """;
+document.getElementById('copyBtn').onclick = async () => {
+  const m = document.getElementById('copyMsg');
+  try {
+    await navigator.clipboard.write([new ClipboardItem({
+      'text/html': new Blob([d.h], {type: 'text/html'}),
+      'text/plain': new Blob([d.t], {type: 'text/plain'})
+    })]);
+    m.textContent = '복사됐어요! 스마트에디터 본문을 클릭하고 Ctrl+V 하세요.';
+    return;
+  } catch (e) {}
+  const src = document.getElementById('copySrc');
+  src.innerHTML = d.h;
+  const r = document.createRange(); r.selectNodeContents(src);
+  const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r);
+  const ok = document.execCommand('copy'); sel.removeAllRanges();
+  m.textContent = ok ? '복사됐어요! 스마트에디터 본문을 클릭하고 Ctrl+V 하세요.' : '복사에 실패했어요. 아래 텍스트 상자에서 복사해 주세요.';
+};
+</script>
+""",
+        height=48,
+    )
+
+
 def render_body_with_inline_official_links(body_markdown, inline_links):
     """본문의 관련 문단 바로 뒤에 공식 행동 링크를 배치합니다."""
     body = body_markdown or ""
@@ -3103,6 +3143,54 @@ if article:
     smart_text = smart_text.strip() + "\n"
 
     st.code(smart_text, language=None)
+
+    st.markdown("### 📤 네이버 스마트에디터로 보내기")
+    editor_content = build_editor_content(article)
+    st.caption("소제목·굵게·표·링크 서식을 유지한 채 복사해요. 위의 텍스트 복사보다 붙여넣은 뒤 손볼 곳이 적어요.")
+    render_rich_copy_button(editor_content["html"], editor_content["plain"])
+
+    if playwright_available():
+        st.caption("내 컴퓨터의 Chrome으로 네이버 글쓰기 화면을 열고 제목·본문을 자동으로 넣어요. **발행은 하지 않아요.** 창은 열어둔 채로 두니 확인·수정·이미지 삽입 후 직접 발행하세요.")
+        nc1, nc2 = st.columns([2, 1])
+        with nc1:
+            naver_blog_id = st.text_input(
+                "네이버 블로그 ID",
+                value=st.session_state.get("naver_blog_id_value") or extract_blog_id(own_blog) or "",
+                key="naver_blog_id_input",
+                help="blog.naver.com/아이디 의 '아이디' 부분이에요.",
+            )
+        with nc2:
+            naver_save_draft = st.checkbox("입력 후 임시저장", value=True, key="naver_save_draft")
+        if st.button("🚀 스마트에디터에 입력하기 (발행 안 함)", disabled=not naver_blog_id.strip()):
+            st.session_state.naver_blog_id_value = naver_blog_id.strip()
+            status_path = os.path.join(tempfile.gettempdir(), "naver_editor_status.log")
+            with open(status_path, "w", encoding="utf-8") as f:
+                f.write("")
+            fd, payload_path = tempfile.mkstemp(suffix=".json", prefix="naver_editor_")
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump({
+                    "blog_id": naver_blog_id.strip(),
+                    "title": editor_content["title"],
+                    "html": editor_content["html"],
+                    "plain": editor_content["plain"],
+                    "save_draft": naver_save_draft,
+                    "status_path": status_path,
+                }, f, ensure_ascii=False)
+            script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "naver_editor.py")
+            subprocess.Popen([sys.executable, script_path, payload_path])
+            st.session_state.naver_status_path = status_path
+            st.info("Chrome 창이 열려요. 처음 한 번은 그 창에서 네이버에 직접 로그인해 주세요.")
+        if st.session_state.get("naver_status_path"):
+            if st.button("🔄 입력 진행 상황 보기"):
+                pass
+            try:
+                with open(st.session_state.naver_status_path, encoding="utf-8") as f:
+                    log_text = f.read().strip()
+            except Exception:
+                log_text = ""
+            st.code(log_text or "시작 중…", language=None)
+    else:
+        st.caption("자동 입력은 내 컴퓨터에서 앱을 실행하고 `pip install playwright`를 설치했을 때만 나타나요. 지금은 '서식 포함 복사'를 사용해 주세요.")
 
     if article.get("toc_included"):
         st.info(f"목차 포함: {article.get('toc_reason', '')}")
