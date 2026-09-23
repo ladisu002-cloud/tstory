@@ -2098,6 +2098,45 @@ def fetch_naver_post(url):
     except Exception as e:
         return {"status": "failed", "url": url, "error": str(e)}
 
+# 내 PC 실행 여부: 자동 입력 도구(playwright)가 설치돼 있으면 로컬 실행으로 봅니다.
+IS_LOCAL_RUN = playwright_available()
+ENV_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+ENV_KEY_MAP = {
+    "gemini_key": "GEMINI_API_KEY",
+    "openai_key": "OPENAI_API_KEY",
+    "naver_id": "NAVER_CLIENT_ID",
+    "naver_secret": "NAVER_CLIENT_SECRET",
+    "searchad_access": "NAVER_SEARCHAD_ACCESS_LICENSE",
+    "searchad_secret": "NAVER_SEARCHAD_SECRET_KEY",
+    "searchad_customer_id": "NAVER_SEARCHAD_CUSTOMER_ID",
+    "own_blog": "NAVER_BLOG_ID",
+}
+
+
+def save_settings_to_env(values):
+    """기존 .env의 다른 줄(모델 설정 등)은 유지하고, 키 값만 갱신합니다."""
+    lines = []
+    if os.path.exists(ENV_FILE_PATH):
+        with open(ENV_FILE_PATH, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    done = set()
+    out = []
+    for line in lines:
+        name = line.split("=", 1)[0].strip() if "=" in line else ""
+        if name in values:
+            out.append(f"{name}={str(values[name] or '').strip()}")
+            done.add(name)
+        else:
+            out.append(line)
+    for name, val in values.items():
+        if name not in done:
+            out.append(f"{name}={str(val or '').strip()}")
+    with open(ENV_FILE_PATH, "w", encoding="utf-8") as f:
+        f.write("\n".join(out) + "\n")
+    for name, val in values.items():
+        os.environ[name] = str(val or "").strip()
+
+
 # 세션에 API 설정을 보관합니다.
 # .env 값은 최초 기본값으로만 사용하고, 사용자가 저장한 값이 우선합니다.
 for _key, _env, _secret_paths in [
@@ -2186,7 +2225,18 @@ with st.sidebar:
         # 저장 버튼을 누른 순간 현재 입력값을 그대로 세션에 확정합니다.
         st.session_state.credentials_saved = True
         st.session_state.connection_test = None
-        st.success(f"설정이 현재 세션에 저장됐어요. · {AI_PROVIDER_LABELS.get(st.session_state.ai_provider, st.session_state.ai_provider)}")
+        if IS_LOCAL_RUN:
+            # 내 PC에서 실행 중이면 .env 파일에도 저장해 다음 실행 때 자동으로 불러옵니다.
+            try:
+                save_settings_to_env({
+                    env: st.session_state.get(key, "")
+                    for key, env in ENV_KEY_MAP.items()
+                })
+                st.success(f"설정을 이 PC(.env)에 저장했어요. 다음에 실행할 때도 그대로 불러와요. · {AI_PROVIDER_LABELS.get(st.session_state.ai_provider, st.session_state.ai_provider)}")
+            except Exception as e:
+                st.warning(f"현재 세션에는 저장됐지만 .env 파일 저장에 실패했어요: {e}")
+        else:
+            st.success(f"설정이 현재 세션에 저장됐어요. · {AI_PROVIDER_LABELS.get(st.session_state.ai_provider, st.session_state.ai_provider)}")
 
     if st.session_state.credentials_saved:
         st.caption("🟢 저장된 API 설정을 사용 중입니다.")
@@ -3192,6 +3242,11 @@ if article:
             st.warning("자동 입력용 Chrome 창이 아직 열려 있어요. 다시 입력하려면 그 창을 먼저 닫아주세요.")
         if st.button("🚀 스마트에디터에 입력하기 (발행 안 함)", disabled=(not naver_blog_id.strip()) or proc_running):
             st.session_state.naver_blog_id_value = naver_blog_id.strip()
+            if IS_LOCAL_RUN and naver_blog_id.strip() and not os.getenv("NAVER_BLOG_ID"):
+                try:
+                    save_settings_to_env({"NAVER_BLOG_ID": naver_blog_id.strip()})
+                except Exception:
+                    pass
             status_path = os.path.join(tempfile.gettempdir(), "naver_editor_status.log")
             with open(status_path, "w", encoding="utf-8") as f:
                 f.write("")
