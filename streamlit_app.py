@@ -20,7 +20,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 st.set_page_config(
-    page_title="네이버 콘텐츠 기회 분석기 V2.9 SEO/GEO",
+    page_title="네이버 콘텐츠 기회 분석기 V3.1 SEO/GEO",
     page_icon="🔎",
     layout="wide",
 )
@@ -617,6 +617,18 @@ ANALYSIS_SCHEMA = {
         },
         "freshness_warning": {"type": "STRING"},
         "content_gaps": {"type": "ARRAY", "items": {"type": "STRING"}},
+        "missing_info": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "item": {"type": "STRING"},
+                    "why_needed": {"type": "STRING"},
+                    "where_to_find": {"type": "STRING"}
+                },
+                "required": ["item", "why_needed", "where_to_find"]
+            }
+        },
         "home_feed_angle": {"type": "STRING"},
         "search_fit_score": {"type": "INTEGER"},
         "home_feed_fit_score": {"type": "INTEGER"},
@@ -679,7 +691,7 @@ ANALYSIS_SCHEMA = {
         "competition", "opportunity", "trend_interpretation",
         "related_keywords", "long_tail_keywords", "title_patterns", "reader_questions",
         "current_source_facts", "freshness_warning",
-        "content_gaps", "home_feed_angle", "search_fit_score", "home_feed_fit_score",
+        "content_gaps", "missing_info", "home_feed_angle", "search_fit_score", "home_feed_fit_score",
         "recommended_content_mode", "content_mode_reason", "official_sources", "recommended_strategy",
         "strategy_reason", "recommended_outline", "existing_content_asset_summary",
         "existing_content_relevance", "existing_content_strengths",
@@ -1141,6 +1153,8 @@ def analyze_with_ai(client, payload):
 - 핵심 질문은 실제 검색 결과 제목·설명·연관 검색어·뉴스·웹문서·공식자료에서 근거를 찾아 작성하세요. 임의로 일반적인 질문을 만들지 마세요.
 - recommended_outline은 키워드 나열 순서가 아니라 '검색자가 정보를 찾는 순서'가 되도록 설계하세요. 가장 중요한 답을 앞쪽에 두고, 신청/예약/구매/선택처럼 행동이 필요한 주제는 행동 방법을 지나치게 뒤로 미루지 마세요.
 - content_gaps는 '경쟁문서에 없는 정보'뿐 아니라 '현재 검색자가 기존 글에서 놓치기 쉬운 최신 정보', '제목은 약속하지만 본문에서 부족하기 쉬운 정보'도 포함하세요.
+- 단, content_gaps에는 **수집된 자료(current_source_facts·source_pages·official_source_pages·action_pages)로 실제로 채울 수 있는 차별 정보만** 넣으세요. 각 항목은 "무엇이 부족하다"가 아니라 "우리 글이 무엇을 담을 수 있다"로 쓰세요. 예: "탈춤공원·원도심·하회마을별로 볼 수 있는 프로그램을 나눠 정리(경쟁 글은 한 곳으로만 안내)".
+- 독자에게 꼭 필요하지만 수집된 자료에서 확인되지 않은 정보(예: 공연별 시간표, 주차장 위치, 셔틀 시간, 입장료)는 content_gaps에 넣지 말고 missing_info에 넣으세요. where_to_find에는 사용자가 직접 확인할 수 있는 위치를 구체적으로 적으세요(예: "공식 홈페이지 > 행사안내 > 행사일정표(이미지로 게시되는 경우가 많음)"). 추측으로 채우지 마세요.
 - 검색형/혼합형에서 반드시 갖춰야 할 정보와 있으면 차별화되는 정보를 구분해서 판단하세요.
 - 키워드의 검색의도와 직접 관련 없는 일반론으로 글자 수를 늘리는 전략은 사용하지 마세요.
 - 제목에서 약속한 정보가 실제 본문에서 충분히 답변될 수 있도록 title promise를 분석 단계에서 검토하세요.
@@ -1169,7 +1183,7 @@ def analyze_with_ai(client, payload):
 - 최신 정보가 부족하면 freshness_warning에 명확히 적으세요.
 
 [실제 독자 질문과 상위 글 구조 활용]
-- kin_questions(지식iN)는 실제 사람들이 이 키워드로 묻는 질문입니다. 반복되거나 중요한 질문을 골라 reader_questions에 5~8개의 자연스러운 구어체 질문 문장으로 정리하세요. 데이터에 근거가 없는 질문을 지어내지 말고, kin_questions가 비어 있으면 블로그·웹문서·연관 키워드에서 확인되는 질문으로 대신하세요.
+- kin_questions(지식iN)는 실제 사람들이 이 키워드로 묻는 질문입니다. 반복되거나 중요한 질문을 골라 reader_questions에 5~8개의 자연스러운 구어체 질문 문장으로 정리하세요. 데이터에 근거가 없는 질문을 지어내지 말고, kin_questions가 비어 있으면 블로그·웹문서·연관 키워드에서 확인되는 질문으로 대신하세요. 오타·띄어쓰기·명칭 차이를 묻는 질문(예: 'A와 B는 같은 축제인가요?')은 reader_questions에서 제외하세요. 질문은 독자가 가장 많이 궁금해할 순서로 정렬하세요.
 - top_blog_structures는 현재 상위 노출 블로그 글의 실제 소제목·분량·표·이미지·FAQ 여부입니다. 상위 글들이 공통으로 다루는 주제(기본으로 갖춰야 할 정보)와 아무도 제대로 다루지 않은 주제를 구분해 content_gaps와 recommended_outline에 반영하세요.
 - 상위 글의 분량과 구성(표·FAQ 유무)을 근거로 competition과 opportunity를 구체적으로 적으세요.
 - is_time_sensitive_topic이 false이면 회차·신청기간 검증은 필요한 경우에만 하고, 검색의도 충족과 정보 차별화에 집중하세요.
@@ -1249,6 +1263,13 @@ def generate_titles_for_mode(client, analysis_payload, mode, direct_experience_e
 - 제목에서 약속한 내용은 실제 본문으로 작성할 수 있어야 합니다.
 - 회차/신청 일정이 있는 키워드는 현재 회차 상태를 최우선으로 반영하세요. 과거 회차가 검색 결과에 더 많이 보여도 현재 상태와 맞지 않으면 제목에서 선택하지 마세요.
 - 정확히 3개를 반환하세요.
+
+[독자 질문과 제목의 관계]
+- 제목은 독자 질문을 모두 담는 곳이 아닙니다. 제목에는 메인키워드 + 가장 큰 궁금증 1~2개만 담고, 나머지 독자 질문은 본문과 FAQ에서 모두 답합니다. 어떤 제목을 고르더라도 본문은 reader_questions 전체를 다룬다는 전제로 제목을 만드세요.
+- 제목의 궁금증은 reader_questions 앞쪽(가장 많이 묻는 질문)에서 고르세요. 질문 문장을 그대로 제목으로 쓰지 말고 "언제·어디서·얼마" 같은 핵심만 살리세요.
+- 축제·행사·여행지·정책처럼 독자 궁금증이 여러 갈래인 주제라면, 3개 중 1개는 전체를 아우르는 총정리형으로 만드세요. 이때 가운뎃점(·)으로 최대 3개 항목까지 쓸 수 있어요(예: '{{메인키워드}} 2026 일정·주차·먹거리 한 번에 정리'). 나머지 2개는 서로 다른 핵심 궁금증을 앞세운 제목으로 만드세요.
+- 'angle'에는 이 제목이 앞세운 궁금증을, 'why'에는 이 제목을 고르면 본문 도입부에서 무엇을 먼저 답하게 되는지 적으세요.
+
 - 여행 콘텐츠 모드가 true이면 제목은 검색자가 해결하려는 구체적인 여행 선택 문제를 반영하세요. 핵심 키워드를 앞쪽에 두고 '추천/비교/선택/일정/숙소 조합' 중 실제 본문에서 다루는 한 가지 핵심 약속을 결합하세요.
 - 추천 후보를 실제로 조사한 경우에만 'TOP 3', '추천 숙소', 특정 숙소명 등을 제목에 사용할 수 있습니다. 본문에서 실제로 다룰 수 없는 후보나 수치를 제목에 넣지 마세요.
 - 여행 제목은 '필수 체크 포인트 3가지' 자체를 반복하기보다, 독자가 최종적으로 무엇을 선택할 수 있는지를 보여주는 방향을 우선하세요.
@@ -1265,6 +1286,7 @@ def generate_titles_for_mode(client, analysis_payload, mode, direct_experience_e
 SEO 메인키워드: {analysis_payload.get("main_keyword") or analysis_payload.get("keyword", "")}
 메인키워드 선정 근거: {analysis_payload.get("main_keyword_evidence", "")}
 검색 의도: {analysis_payload.get("search_intent", "")}
+실제 독자 질문(많이 묻는 순): {json.dumps(analysis_payload.get("reader_questions", []), ensure_ascii=False)}
 현재 회차/신청 상태: {json.dumps(analysis_payload.get("current_status", {}), ensure_ascii=False)}
 콘텐츠 GAP: {json.dumps(analysis_payload.get("content_gaps", []), ensure_ascii=False)}
 추가 검색 표현: {json.dumps(analysis_payload.get("extra_search_terms", []), ensure_ascii=False)}
@@ -1373,6 +1395,7 @@ def build_writing_context(analysis_payload):
         "extra_search_terms": compact_list(a.get("extra_search_terms"), 160, 12),
         "title_patterns": compact_list(a.get("title_patterns"), 220, 8),
         "reader_questions": compact_list(a.get("reader_questions"), 200, 10),
+        "missing_info": compact_list(a.get("missing_info"), 300, 10),
         "current_status": a.get("current_status", {}) or {},
         "freshness_warning": _compact_text(a.get("freshness_warning"), 1000),
         "current_source_facts": compact_list(a.get("current_source_facts"), 1000, 15),
@@ -1470,7 +1493,15 @@ AI 요약은 문단 전체가 아니라 '그 자체로 완결된 한두 문장'�
 6. 핵심 섹션마다 정의형("OO은 ~예요"), 조건형("~라면 ~하는 게 좋아요"), 비교형("A는 ~, B는 ~예요") 문장 중 하나 이상을 자연스럽게 넣으세요.
 7. 제도·기관·장소·제품은 처음 나올 때 정식 명칭을 쓰고, 이후에는 약칭을 써도 됩니다.
 8. FAQ 질문은 실제로 검색창에 입력할 법한 구어체 질문으로 쓰고, 답변 첫 문장에 결론을 넣은 뒤 2~3문장으로 끝내세요.
-9. reader_questions(실제 독자 질문)를 우선 활용하세요. 본문 H2에서 답한 질문은 H2 직답 문장으로, 본문에서 다루지 못한 질문은 FAQ로 해결하세요. 같은 질문을 H2와 FAQ에 중복하지 마세요.
+9. reader_questions(실제 독자 질문)는 아래 [독자 질문 커버 규칙]대로 빠짐없이 답하세요.
+
+[독자 질문 커버 규칙 — 제목과 상관없이 적용]
+- reader_questions는 실제 검색자가 묻는 질문입니다. 어떤 제목을 골랐든 이 질문들은 본문 또는 FAQ에서 전부 답해야 합니다.
+- 제목의 핵심 약속과 직접 관련된 질문 → 앞쪽 H2에서 가장 자세히 답하세요.
+- 제목과 덜 관련된 질문 → 뒤쪽의 짧은 H2(예: '가기 전에 알아두면 좋은 것')에서 2~4문장으로 답하거나 FAQ로 답하세요. 제목 밖이라는 이유로 빼지 마세요.
+- 같은 질문을 H2와 FAQ에 중복해서 답하지 마세요.
+- 올해 세부 정보가 조사 노트와 '사용자가 직접 확인한 정보'에 모두 없는 질문(missing_info 항목)은 확인된 범위(무엇이 있는지)만 쓰고, 세부는 "어디서 보면 되는지"를 한 문장으로 안내하세요. 이런 안내 문장은 글 전체에서 2번을 넘기지 말고, 가능하면 FAQ 한 곳에 모으세요. 예: "부스 위치는 공식 홈페이지 공지사항에서 축제 직전에 올라와요."
+- 명칭 차이·오타를 묻는 질문은 답하지 마세요.
 
 [검색형(SEARCH) 작성 규칙]
 - 검색 노출의 핵심은 키워드 반복량이 아니라 '검색의도 충족 + 정보 충실성 + 주제 집중도 + 최신성 + 차별 정보'입니다.
@@ -1488,7 +1519,7 @@ AI 요약은 문단 전체가 아니라 '그 자체로 완결된 한두 문장'�
 - 한 문단 1~2문장, 짧은 문장과 조금 긴 설명을 섞어 모바일 리듬을 만드세요.
 - 중반에는 비교·실수하기 쉬운 부분·의외의 포인트·체크리스트처럼 저장 가치가 있는 정보를 두세요.
 - 후반에는 독자가 기억할 핵심 2~4개를 정리하고, 필요하면 '그래서 이렇게 하면 돼요' 식의 짧은 행동 가이드를 주세요.
-- 모든 세부 정보를 나열하지 말고 하나의 핵심 스토리/각도를 끝까지 유지하세요. 인용구는 실제로 강한 한 문장이 있을 때만 쓰세요.
+- 하나의 핵심 스토리/각도를 끝까지 유지하되, 독자 질문 중 본문에 담지 못한 것은 FAQ로 답하세요. 인용구는 실제로 강한 한 문장이 있을 때만 쓰세요.
 
 [혼합형(HYBRID) 작성 규칙]
 - 서론은 홈판형처럼 공감과 궁금증으로 시작하고, 본문 구조는 검색형처럼 H2별 질문-답변으로 구성하세요.
@@ -1500,7 +1531,7 @@ AI 요약은 문단 전체가 아니라 '그 자체로 완결된 한두 문장'�
 - 주요 H2는 "## 1. ...", H3는 필요할 때만 "### 1-1. ..." 형식으로 번호를 붙이세요.
 - H2 제목은 12~20자를 목표로, 최대 24자입니다. 한 H2에 한 핵심만 담고, 콜론(:) 나열·연도·과한 수식어는 본문으로 보내세요. 예: '환급금 대상 확인', '환급액과 지급일', '신청 방법'.
 - 마지막 H2 제목에는 '정리' 또는 '마무리'를 넣으세요. 예: '## 5. 한 번에 정리'. 앱이 FAQ를 이 H2 바로 앞에 자동으로 넣습니다.
-- body_markdown 안에 FAQ 섹션을 따로 쓰지 마세요. FAQ는 faq 필드에만 3~5개 작성합니다.
+- body_markdown 안에 FAQ 섹션을 따로 쓰지 마세요. FAQ는 faq 필드에만 3~8개 작성합니다. 본문에서 답하지 못한 독자 질문이 많으면 그만큼 늘리세요.
 - 모바일 화면 기준으로 1~3문장마다 문단을 나누세요.
 
 [여행 정보·추천 콘텐츠 규칙 — is_travel_content가 true일 때]
@@ -1521,7 +1552,7 @@ AI 요약은 문단 전체가 아니라 '그 자체로 완결된 한두 문장'�
 - 넣을 링크가 없으면 inline_official_links는 빈 배열로 두고, 같은 링크를 여러 곳에 반복하지 마세요.
 
 [팩트 규칙]
-1) 선택된 제목이 글의 계약입니다. 본문 전체가 제목의 약속을 충족해야 하고, 제목에 없는 주제로 옆길로 새지 마세요.
+1) 선택된 제목의 약속이 글의 중심입니다. 제목의 약속은 가장 먼저, 가장 자세히 답하세요. 독자 질문(reader_questions)은 제목 밖이어도 다뤄야 하며, 검색의도·독자 질문과 무관한 일반 팁으로 분량을 채우지 마세요.
 2) 할인율, 프로모션 기간, 할인코드, 가격, 일정, 신청기간 등 바뀌는 정보는 current_source_facts 또는 source_pages에서 근거가 확인된 것만 쓰세요. 추측은 금지입니다. 확인되지 않은 정보는 "확인 필요"라고 적지 말고 글에서 빼세요.
 2-1) freshness_warning, current_status, gap 분석 같은 조사 노트의 메모는 글쓴이 참고용입니다. 그 내용이나 표현을 본문에 옮기지 마세요.
 3) 공식 페이지의 최신 상태가 널리 알려진 내용과 다르면 최신 확인 내용을 우선하세요.
@@ -1529,6 +1560,13 @@ AI 요약은 문단 전체가 아니라 '그 자체로 완결된 한두 문장'�
 5) 참고/벤치마크 URL은 구조·정보 보강용입니다. 문장을 복사하지 말고, 사실은 공식 근거와 교차 확인된 것만 확정하세요. 단, benchmark.source_type이 OFFICIAL_REFERENCE이거나 user_official_pages에 있는 내용은 공식 사실로 사용하세요.
 7) current_status.type이 EVENT면 행사 기간 기준으로 '개최 예정/진행 중/종료'를 정확히 표현하세요.
 6) 애드센스 유도용 외부 링크는 쓰지 마세요. 쿠팡파트너스는 제품 구매 의도가 있을 때만 1개 슬롯을 제안하고, URL은 만들지 마세요.
+
+[사용자가 직접 확인한 정보 — 공식 사실로 사용]
+{writing_options.get("user_supplied_facts", "").strip() or "제공되지 않음"}
+- 제공된 경우, 사용자가 공식 홈페이지·안내문에서 직접 옮겨 적은 확인된 정보입니다. 조사 노트보다 우선하는 공식 사실로 보고 빠짐없이 활용하세요.
+- 시간표·요금·주차·셔틀처럼 항목이 여러 개인 정보는 표나 짧은 목록으로 정리해 독자가 한눈에 보게 하세요.
+- 이 정보를 어디서 받았는지 설명하지 말고, 블로그 글의 정보로 자연스럽게 녹여 쓰세요.
+- 이 정보로 채워진 missing_info 항목은 "공식 홈페이지에서 확인하세요"로 넘기지 말고 본문에서 직접 답하세요.
 
 [직접 경험]
 - 사용 여부: {"사용" if writing_options.get("direct_experience_enabled") else "사용 안 함"}
@@ -1568,7 +1606,7 @@ AI 요약은 문단 전체가 아니라 '그 자체로 완결된 한두 문장'�
 A. 제목의 핵심 약속이 본문 첫 30% 안에서 해결되기 시작한다.
 B. 분석된 핵심 질문과 content_gaps가 구체적인 정보로 반영된다.
 C. 숫자·날짜·가격·조건이 근거 데이터와 일치하고, 끝난 회차를 현재처럼 쓰지 않는다.
-D. 제목과 관계없는 문단이 없고, 키워드 반복·AI식 반복 문장이 없다.
+D. reader_questions가 본문 또는 FAQ에서 모두 답해졌고, 제목·독자 질문과 무관한 문단이나 키워드 반복·AI식 반복 문장이 없다.
 E. 기준일 줄, (SEARCH/HYBRID) 핵심 요약, H2별 직답 문장이 있다.
 F. 처음부터 끝까지 해요체를 유지한다.
 G. 조사 보고서가 아니라 블로그 글로 읽힌다. 유보·검증 표현이 반복되지 않고, 소제목이 독자의 궁금증으로 쓰여 있다.
@@ -1691,6 +1729,32 @@ def seo_check(article, analysis):
     related_hits = sum(1 for x in related[:10] if x in text)
     related_ok = related_hits >= min(2, len(related)) if related else True
 
+    # 독자 질문 커버: 질문의 핵심 단어가 본문+FAQ에 절반 이상 등장하면 답한 것으로 봅니다.
+    faq_text = " ".join(f"{x.get('question','')} {x.get('answer','')}" for x in (article.get("faq", []) or []))
+    cover_text = re.sub(r"\s+", "", text + faq_text)
+    stop = {"어디", "언제", "어떻게", "무엇", "있나요", "하나요", "인가요", "되나요", "나요", "이용", "확인", "방법", "가능", "해야", "하는", "있는", "어디서", "몇", "시에"}
+    kw_norm = re.sub(r"\s+", "", keyword)
+    rq_total, rq_covered, rq_missing = 0, 0, []
+    for q in (analysis.get("reader_questions", []) or []):
+        words = []
+        for w in re.findall(r"[가-힣A-Za-z0-9]{2,}", str(q)):
+            w = re.sub(r"(은|는|이|가|을|를|과|와|에서|에|의|도|로|으로|이나|나|부터|까지)$", "", w)
+            # 동사·형용사 활용형(열리고, 시작하나요 등)은 본문에서 형태가 바뀌므로 명사만 비교합니다.
+            if re.search(r"(나요|까요|가요|어요|아요|해요|하고|리고|이고|하나|해야|하는|되는|있는|없는|는지|을까|려면|하면|면)$", w):
+                continue
+            if len(w) < 2 or w in stop or w == kw_norm or kw_norm in w:
+                continue
+            words.append(w)
+        if not words:
+            continue
+        rq_total += 1
+        hit = sum(1 for w in words if w in cover_text)
+        if hit / len(words) >= 0.5:
+            rq_covered += 1
+        else:
+            rq_missing.append(str(q))
+    rq_ok = rq_total == 0 or rq_covered == rq_total
+
     faq_count = len(article.get("faq", []) or [])
     faq_ok = faq_count >= (2 if mode == "HOME_FEED" else 3)
 
@@ -1712,6 +1776,7 @@ def seo_check(article, analysis):
         f"해요체 말투 유지 ({round(tone_ratio * 100)}%)": tone_ok,
         (f"블로그 문체(보고서·유보 표현 {report_total}회" + (": " + ", ".join(list(report_hits)[:4]) if report_hits else "") + ")"): report_ok,
         "FAQ 구성": faq_ok,
+        (f"독자 질문 반영 ({rq_covered}/{rq_total})" + (" · 누락: " + " / ".join(rq_missing[:3]) if rq_missing else "")): rq_ok,
         "태그 구성(메인키워드 포함)": tags_ok,
         "홈판 제목 별도 생성": bool(article.get("home_title")),
         "썸네일 문구 생성": bool(article.get("thumbnail_text")),
@@ -2188,7 +2253,7 @@ length = {
 }.get(content_mode_request, "")
 
 if not provider_ready or not naver_id or not naver_secret:
-    st.title("🔎 네이버 콘텐츠 기회 분석기 V2.9 SEO/GEO")
+    st.title("🔎 네이버 콘텐츠 기회 분석기 V3.1 SEO/GEO")
     st.info("왼쪽 사이드바에서 사용할 AI 방식과 API Key, Naver Client ID / Secret을 입력하면 시작할 수 있어요.")
     st.markdown("""
 ### 이 버전에서 하는 일
@@ -2429,6 +2494,12 @@ if analyze_clicked:
             ai = analyze_with_ai(client, payload)
             payload.update(ai)
 
+            # 명칭·오타 차이를 묻는 질문은 프롬프트로 한 번 거르고, 남아 있으면 코드에서 한 번 더 제외합니다.
+            naming_q = re.compile(r"같은\s*(?:축제|행사|곳|것|제품|제도|사업|대회)\s*(?:인가요|인지|이에요|예요|맞나요)|다른\s*(?:이름|명칭)|명칭|오타|철자|띄어쓰기")
+            payload["reader_questions"] = [
+                q for q in (payload.get("reader_questions") or []) if not naming_q.search(str(q))
+            ]
+
             # Creator Advisor 입력 키워드는 항상 분석의 기준점으로 보존합니다.
             # AI가 메인키워드를 비워두거나 임의의 새 표현을 만들면 원본 키워드로 복귀합니다.
             input_keyword = keyword.strip()
@@ -2465,6 +2536,7 @@ if analyze_clicked:
             st.session_state.pop("content_mode_radio", None)
             st.session_state.pop("selected_title_radio", None)
             st.session_state.article = None
+            st.session_state.user_supplied_facts = ""
             status.update(label="분석 완료", state="complete")
         except Exception as e:
             status.update(label="분석 실패", state="error")
@@ -2758,6 +2830,42 @@ if analysis:
                 if not tops:
                     st.caption("상위 블로그 본문을 읽지 못했어요.")
 
+    # 실제로 읽은 공식/참고 페이지 목록: 자료 부족이 '못 읽어서'인지 '원래 없어서'인지 판단하는 용도
+    official_pages_read = analysis.get("official_source_pages", []) or []
+    bench = analysis.get("benchmark", {}) or {}
+    with st.expander(f"🔎 실제로 읽은 공식·참고 페이지 ({len(official_pages_read)}개)", expanded=False):
+        if bench.get("status") == "ok":
+            st.caption(
+                f"입력 URL: {bench.get('url','')} · 판별: {bench.get('source_type','')} · "
+                f"본문 {len(bench.get('text','')):,}자 · 발견한 안내 하위 링크 {len(bench.get('info_links', []) or [])}개"
+            )
+            if bench.get("note"):
+                st.warning(bench["note"])
+        elif bench.get("status") == "failed":
+            st.warning(f"입력 URL을 읽지 못했어요: {bench.get('error','')}")
+        for pg in official_pages_read:
+            n = len(pg.get("text", "") or "")
+            flag = " ⚠️ 본문 거의 없음(이미지·스크립트 페이지일 수 있음)" if n < 300 else ""
+            st.caption(f"• {pg.get('title','')} — 본문 {n:,}자{flag}")
+            st.caption(f"  {pg.get('url','')}")
+        if not official_pages_read:
+            st.caption("공식 페이지를 읽지 못했어요. 참고 URL에 공식 홈페이지를 넣고 '공식 홈페이지예요'를 체크해 보세요.")
+
+    missing = analysis.get("missing_info", []) or []
+    if missing:
+        st.markdown("### 📝 글에 넣으면 좋은데 자료가 부족한 정보")
+        st.caption("수집한 페이지에서 확인되지 않은 정보예요. 공식 홈페이지의 이미지(행사일정표·포스터)나 공지사항에서 직접 확인해 아래에 적어주면, 글에 그대로 반영돼요.")
+        for m in missing:
+            st.markdown(f"**• {m.get('item','')}**")
+            st.caption(f"필요한 이유: {m.get('why_needed','')} · 확인 위치: {m.get('where_to_find','')}")
+    st.text_area(
+        "직접 확인한 정보 입력 (선택)",
+        key="user_supplied_facts",
+        height=140,
+        placeholder="예)\n개막식: 9월 OO일(요일) OO:OO, OO공연장\n주차: OO주차장, 임시주차장 OO / 셔틀 OO분 간격\n입장료: OO공연장 유료(성인 OOOO원), 그 외 무료",
+        help="공식 홈페이지나 안내문에서 직접 확인한 내용만 적어주세요. 공식 사실로 사용됩니다. 형식은 자유예요.",
+    )
+
     st.divider()
     st.subheader("3. 글 작성")
 
@@ -2791,7 +2899,8 @@ if analysis:
                      "selected_title": selected_title,
                      "selected_title_reason": st.session_state.get("selected_title_reason", ""),
                      "direct_experience_enabled": bool(st.session_state.get("direct_experience_enabled", False)),
-                     "direct_experience_text": st.session_state.get("direct_experience_text", "").strip() if st.session_state.get("direct_experience_enabled", False) else ""},
+                     "direct_experience_text": st.session_state.get("direct_experience_text", "").strip() if st.session_state.get("direct_experience_enabled", False) else "",
+                     "user_supplied_facts": st.session_state.get("user_supplied_facts", "").strip()},
                 )
                 # 사용자가 선택한 제목과 분석에서 확정한 메인키워드를 실제 발행 데이터에 고정합니다.
                 if selected_title:
