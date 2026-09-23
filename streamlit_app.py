@@ -9,6 +9,8 @@ import hashlib
 import hmac
 from datetime import date, timedelta
 from urllib.parse import urlparse, urljoin
+from concurrent.futures import ThreadPoolExecutor
+from html import unescape as html_unescape
 import requests
 import streamlit as st
 from google import genai
@@ -18,7 +20,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 st.set_page_config(
-    page_title="네이버 콘텐츠 기회 분석기 V2.6 SEO/GEO",
+    page_title="네이버 콘텐츠 기회 분석기 V2.7 SEO/GEO",
     page_icon="🔎",
     layout="wide",
 )
@@ -26,11 +28,10 @@ st.set_page_config(
 CATEGORIES = ["리뷰", "맛집", "일상", "쇼핑정보", "여행정보", "핫이슈", "기타정보"]
 MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
-AI_PROVIDER_OPTIONS = ["GEMINI", "OPENAI", "HYBRID"]
+AI_PROVIDER_OPTIONS = ["GEMINI", "OPENAI"]
 AI_PROVIDER_LABELS = {
     "GEMINI": "Gemini — 분석/제목/본문",
     "OPENAI": "OpenAI — 분석/제목/본문",
-    "HYBRID": "혼합 — Gemini 분석 + OpenAI 제목/본문",
 }
 
 def clean_html(text):
@@ -159,7 +160,7 @@ def _raise_naver_error(r, api_name):
 def naver_search(api, query, client_id, client_secret, display=10, sort=None):
     """NAVER API HUB 검색 API 호출.
 
-    지원 검색 엔드포인트: blog, news, webkr, image
+    지원 검색 엔드포인트: blog, news, webkr, kin, image
     webkr는 sort 파라미터를 보내지 않습니다.
     """
     url = f"{NAVER_API_HUB_BASE}/search/v1/{api}"
@@ -168,7 +169,7 @@ def naver_search(api, query, client_id, client_secret, display=10, sort=None):
         "display": min(max(int(display), 1), 100),
         "format": "json",
     }
-    if sort and api in {"blog", "news", "image"}:
+    if sort and api in {"blog", "news", "image", "kin"}:
         params["sort"] = sort
     if api == "image":
         params["filter"] = "all"
@@ -284,44 +285,67 @@ def dedupe_search_items(items):
         out.append(item)
     return out
 
-def current_web_searches(keyword, client_id, client_secret, commercial=False, is_travel_content=False):
-    """시의성 보강 검색. 여행글은 일반/공식 검색어와 별도로 여행자 선택용 검색어를 사용합니다."""
+def current_web_searches(keyword, client_id, client_secret, commercial=False, is_travel_content=False, time_sensitive=False):
+    """주제 유형별 보강 검색. 검색어를 병렬로 호출합니다.
+
+    - 여행: 여행자 선택용 검색어
+    - 신청·일정형(지원금·정책·축제·행사·프로모션): 공식/신청/일정 검색어
+    - 일반 정보형: 최소한의 보강 검색만 수행
+    """
+    kw = keyword.strip()
     if is_travel_content:
         queries = [
-            keyword,
-            f"{keyword} 추천",
-            f"{keyword} 가족",
-            f"{keyword} 일정",
-            f"{keyword} 숙소" if any(x in keyword for x in ("숙소", "호텔", "리조트")) else f"{keyword} 추천 장소",
-            f"{keyword} 비교",
-            f"{keyword} 예약",
-            f"{keyword} 공식",
+            kw,
+            f"{kw} 추천",
+            f"{kw} 일정",
+            f"{kw} 숙소" if any(x in kw for x in ("숙소", "호텔", "리조트")) else f"{kw} 추천 장소",
+            f"{kw} 비교",
+            f"{kw} 예약",
+            f"{kw} 공식",
         ]
         if commercial:
-            queries.append(f"{keyword} 가격")
-    else:
+            queries.append(f"{kw} 가격")
+    elif time_sensitive:
         queries = [
-            f"{keyword} 공식 홈페이지",
-            f"{keyword} 공식",
-            f"{keyword} 최신",
-            f"{keyword} 신청 공식",
-            f"{keyword} 신청 일정",
-            f"{keyword} 접수 일정",
-            f"{keyword} 1차 2차",
-            f"{keyword} 2차",
-            f"{keyword} 모집 일정",
-            f"{keyword} 축제 공식",
+            f"{kw} 공식 홈페이지",
+            f"{kw} 신청 방법",
+            f"{kw} 신청 일정",
+            f"{kw} 대상 조건",
+            f"{kw} 1차 2차",
+            f"{kw} 최신",
         ]
+        if any(x in kw for x in ("축제", "행사", "페스티벌", "박람회")):
+            queries.append(f"{kw} 축제 공식")
         if commercial:
-            queries.append(f"{keyword} 할인 쿠폰")
-    merged = []
-    for q in queries:
+            queries.append(f"{kw} 할인 쿠폰")
+    else:
+        queries = [kw, f"{kw} 공식", f"{kw} {date.today().year}"]
+        if commercial:
+            queries.append(f"{kw} 가격")
+
+    def _one(q):
         try:
-            result = naver_search("webkr", q, client_id, client_secret, display=10, sort="sim")
-            merged.extend(result.get("items", []))
+            return naver_search("webkr", q, client_id, client_secret, display=10, sort="sim").get("items", [])
         except Exception:
-            continue
-    return dedupe_search_items(merged)[:50]
+            return []
+
+    merged = []
+    with ThreadPoolExecutor(max_workers=min(4, len(queries))) as ex:
+        for items in ex.map(_one, queries):
+            merged.extend(items)
+    return dedupe_search_items(merged)[:40]
+
+
+# 신청·일정 확인이 중요한 주제를 키워드에서 자동 감지합니다(체크박스 기본값으로만 사용).
+TIME_SENSITIVE_PATTERN = re.compile(
+    r"지원금|지원사업|신청|접수|모집|축제|행사|페스티벌|박람회|환급|바우처|수당|장려금|보조금|"
+    r"정책|공모|청약|쿠폰|할인코드|프로모션|이벤트|회차|\d차"
+)
+
+
+def is_time_sensitive_keyword(keyword):
+    return bool(TIME_SENSITIVE_PATTERN.search(keyword or ""))
+
 
 def official_candidate_results(items):
     """공식 출처 후보를 넓게 추립니다. 최종 공식 여부는 AI가 실제 페이지 내용과 도메인을 함께 검토합니다."""
@@ -338,8 +362,9 @@ def official_candidate_results(items):
             out.append(item)
     return dedupe_search_items(out)[:15]
 
+
 def _extract_page_text_and_links(raw, base_url=""):
-    # HTML 본문 + 이미지/접근성 속성 + 신청/접수 등 행동 링크를 범용적으로 추출합니다.
+    # HTML 본문 + 접근성 속성 + 신청/접수 등 행동 링크를 범용적으로 추출합니다.
     raw_no_script = re.sub(r"<script[\s\S]*?</script>", " ", raw or "", flags=re.I)
     raw_no_script = re.sub(r"<style[\s\S]*?</style>", " ", raw_no_script, flags=re.I)
     attrs = []
@@ -365,36 +390,196 @@ def _extract_page_text_and_links(raw, base_url=""):
         if x["url"] not in seen: seen.add(x["url"]); dedup.append(x)
     return text, dedup[:12]
 
-def fetch_source_pages(items, limit=5):
-    """검색 결과의 실제 페이지를 읽고 본문·이미지 속성·행동 링크를 함께 수집합니다."""
-    pages=[]
-    for item in (items or [])[:limit]:
-        url=(item.get("link") or item.get("originallink") or "").strip()
-        if not url or not url.startswith(("http://", "https://")): continue
+
+PAGE_TIMEOUT = 8
+PAGE_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; ContentAnalyzer/2.6)"}
+
+
+def _http_get_text(url, timeout=PAGE_TIMEOUT):
+    r = requests.get(url, timeout=timeout, headers=PAGE_HEADERS)
+    if not r.ok:
+        return None
+    # EUC-KR 등 인코딩 정보가 없는 한국 사이트의 글자 깨짐을 줄입니다.
+    if not r.encoding or r.encoding.lower() == "iso-8859-1":
+        r.encoding = r.apparent_encoding
+    return r.text
+
+
+def fetch_raw_pages(urls, cache, max_workers=10):
+    """여러 URL을 동시에 가져옵니다. cache(dict)에 이미 있는 URL은 다시 받지 않습니다.
+    반환: {url: raw_html 또는 None}
+    """
+    todo = [u for u in dict.fromkeys(urls) if u and u not in cache]
+
+    def work(u):
         try:
-            r=requests.get(url, timeout=10, headers={"User-Agent":"Mozilla/5.0 (compatible; ContentAnalyzer/2.5)"})
-            if not r.ok: continue
-            text,links=_extract_page_text_and_links(r.text,url)
-            if text: pages.append({"title":clean_html(item.get("title","")),"url":url,"text":text[:9000],"action_links":links})
-        except Exception: continue
+            return u, _http_get_text(u)
+        except Exception:
+            return u, None
+
+    if todo:
+        with ThreadPoolExecutor(max_workers=min(max_workers, len(todo))) as ex:
+            for u, raw in ex.map(work, todo):
+                cache[u] = raw
+    return {u: cache.get(u) for u in urls}
+
+
+def _item_url(item):
+    url = (item.get("link") or item.get("originallink") or "").strip()
+    return url if url.startswith(("http://", "https://")) else ""
+
+
+def build_source_pages(items, cache, limit=5, text_limit=9000):
+    """이미 받아온(cache) HTML로 본문·행동 링크를 정리합니다."""
+    pages = []
+    for item in (items or [])[:limit]:
+        url = _item_url(item)
+        raw = cache.get(url) if url else None
+        if not raw:
+            continue
+        text, links = _extract_page_text_and_links(raw, url)
+        if text:
+            pages.append({"title": clean_html(item.get("title", "")), "url": url, "text": text[:text_limit], "action_links": links})
     return pages
 
-def fetch_related_action_pages(pages, limit=8):
-    """공식/참고 페이지의 신청·접수·모집·지원·예약 등 행동 링크를 따라가 실제 상태를 확인합니다."""
-    candidates=[]; seen=set()
+
+def fetch_related_action_pages(pages, cache, limit=8):
+    """공식/참고 페이지의 신청·접수·모집·예약 등 행동 링크를 동시에 따라가 실제 상태를 확인합니다."""
+    if limit <= 0:
+        return []
+    candidates = []; seen = set()
     for page in pages or []:
-        for link in page.get("action_links",[]) or []:
-            u=(link.get("url") or "").strip()
-            if u and u not in seen: seen.add(u); candidates.append((u,link.get("text",""),page.get("url","")))
-    out=[]
-    for url,anchor,parent in candidates[:limit]:
-        try:
-            r=requests.get(url,timeout=10,headers={"User-Agent":"Mozilla/5.0 (compatible; ContentAnalyzer/2.5)"})
-            if not r.ok: continue
-            text,links=_extract_page_text_and_links(r.text,url)
-            if text: out.append({"title":anchor or "공식 행동 페이지","url":url,"parent_url":parent,"text":text[:9000],"action_links":links})
-        except Exception: continue
+        for link in page.get("action_links", []) or []:
+            u = (link.get("url") or "").strip()
+            if u and u not in seen:
+                seen.add(u); candidates.append((u, link.get("text", ""), page.get("url", "")))
+    candidates = candidates[:limit]
+    raws = fetch_raw_pages([c[0] for c in candidates], cache)
+    out = []
+    for url, anchor, parent in candidates:
+        raw = raws.get(url)
+        if not raw:
+            continue
+        text, links = _extract_page_text_and_links(raw, url)
+        if text:
+            out.append({"title": anchor or "공식 행동 페이지", "url": url, "parent_url": parent, "text": text[:9000], "action_links": links})
     return out
+
+
+def _naver_blog_mobile_url(link):
+    """블로그 검색 결과 링크를 본문이 바로 들어있는 모바일 주소로 바꿉니다."""
+    link = (link or "").strip()
+    m = re.search(r"blog\.naver\.com/([A-Za-z0-9_\-]+)/(\d+)", link)
+    if m:
+        return f"https://m.blog.naver.com/{m.group(1)}/{m.group(2)}"
+    m = re.search(r"blogId=([^&]+).*?logNo=(\d+)", link)
+    if m:
+        return f"https://m.blog.naver.com/{m.group(1)}/{m.group(2)}"
+    return link
+
+
+def parse_naver_blog_structure(raw, url="", title=""):
+    """상위 노출 블로그 글의 구조(소제목·분량·표·이미지·FAQ 여부)를 추출합니다.
+    스마트에디터 ONE(se-component) 구조를 기준으로 하고, 구형 에디터는 본문 텍스트만 사용합니다.
+    """
+    raw = re.sub(r"<script[\s\S]*?</script>", " ", raw or "", flags=re.I)
+    raw = re.sub(r"<style[\s\S]*?</style>", " ", raw, flags=re.I)
+
+    def _txt(s):
+        return re.sub(r"\s+", " ", html_unescape(clean_html(s))).strip()
+
+    headings, quotes, texts = [], [], []
+    image_count = table_count = 0
+    chunks = re.split(r'<div class="se-component ', raw)
+    if len(chunks) > 1:
+        for chunk in chunks[1:]:
+            head = chunk[:200]
+            # split 결과는 class 속성 나머지('se-text ...">')로 시작하므로 첫 '>' 이후만 본문으로 씁니다.
+            body = _txt(chunk[chunk.find(">") + 1:][:8000])
+            if "se-sectionTitle" in head:
+                if body: headings.append(body[:60])
+            elif "se-quotation" in head:
+                if body: quotes.append(body[:80])
+            elif "se-image" in head:
+                image_count += max(1, chunk.count("<img"))
+            elif "se-table" in head:
+                table_count += 1
+                if body: texts.append(body)
+            elif "se-text" in head:
+                if body: texts.append(body)
+        full_text = " ".join(texts)
+    else:
+        full_text = _txt(raw)
+        image_count = raw.count("<img")
+        table_count = raw.lower().count("<table")
+    return {
+        "title": title,
+        "url": url,
+        "char_count": len(re.sub(r"\s", "", full_text)),
+        "headings": headings[:15],
+        "quotes_used_as_headings": quotes[:6],
+        "image_count": image_count,
+        "table_count": table_count,
+        "has_faq": bool(re.search(r"FAQ|자주\s*묻는|Q\.", full_text)),
+        "intro": full_text[:300],
+        "text_excerpt": full_text[:1500],
+    }
+
+
+def build_top_blog_structures(blog_items, cache, limit=5):
+    out = []
+    for item in (blog_items or [])[:limit]:
+        m_url = _naver_blog_mobile_url(item.get("link", ""))
+        raw = cache.get(m_url)
+        if not raw:
+            continue
+        info = parse_naver_blog_structure(raw, url=item.get("link", ""), title=clean_html(item.get("title", "")))
+        if info["char_count"] >= 200:
+            out.append(info)
+    return out
+
+
+def compact_analysis_input(payload):
+    """AI 분석 프롬프트에 넣을 입력을 줄입니다.
+    프롬프트에 따로 넣는 항목은 제외하고, 페이지 원문은 페이지당 3,000자로 자릅니다.
+    """
+    skip = {"extra_search_terms", "additional_search_data", "benchmark", "searchad_keyword_data"}
+    out = {}
+    for k, v in (payload or {}).items():
+        if k in skip:
+            continue
+        if k in ("source_pages", "official_source_pages", "action_pages"):
+            out[k] = [
+                {**p, "text": _compact_text(p.get("text"), 3000), "action_links": (p.get("action_links") or [])[:6]}
+                for p in (v or [])
+            ]
+        elif k == "specific_existing_post" and isinstance(v, dict) and v.get("text"):
+            out[k] = {**v, "text": _compact_text(v.get("text"), 6000)}
+        else:
+            out[k] = v
+    return out
+
+
+def compact_benchmark_for_prompt(benchmark):
+    if not isinstance(benchmark, dict) or not benchmark.get("text"):
+        return benchmark or {}
+    return {**benchmark, "text": _compact_text(benchmark.get("text"), 4000), "action_links": (benchmark.get("action_links") or [])[:6]}
+
+
+# 내 기존글 URL이 없을 때는 AI가 작성해도 코드가 덮어쓰는 필드들입니다. 요청하지 않아 시간과 토큰을 아낍니다.
+EXISTING_CONTENT_FIELDS = (
+    "existing_content_asset_summary", "existing_content_relevance", "existing_content_strengths",
+    "existing_content_missing_or_extendable", "cannibalization_note", "recommended_source_post",
+)
+
+
+def analysis_schema_for(has_specific_post):
+    if has_specific_post:
+        return ANALYSIS_SCHEMA
+    props = {k: v for k, v in ANALYSIS_SCHEMA["properties"].items() if k not in EXISTING_CONTENT_FIELDS}
+    required = [k for k in ANALYSIS_SCHEMA["required"] if k not in EXISTING_CONTENT_FIELDS]
+    return {"type": "OBJECT", "properties": props, "required": required}
+
 
 ANALYSIS_SCHEMA = {
     "type": "OBJECT",
@@ -409,6 +594,7 @@ ANALYSIS_SCHEMA = {
         "related_keywords": {"type": "ARRAY", "items": {"type": "STRING"}},
         "long_tail_keywords": {"type": "ARRAY", "items": {"type": "STRING"}},
         "title_patterns": {"type": "ARRAY", "items": {"type": "STRING"}},
+        "reader_questions": {"type": "ARRAY", "items": {"type": "STRING"}},
         "current_source_facts": {
             "type": "ARRAY",
             "items": {
@@ -486,7 +672,7 @@ ANALYSIS_SCHEMA = {
     "required": [
         "search_intent", "main_keyword", "main_keyword_source", "main_keyword_evidence",
         "competition", "opportunity", "trend_interpretation",
-        "related_keywords", "long_tail_keywords", "title_patterns",
+        "related_keywords", "long_tail_keywords", "title_patterns", "reader_questions",
         "current_source_facts", "freshness_warning",
         "content_gaps", "home_feed_angle", "search_fit_score", "home_feed_fit_score",
         "recommended_content_mode", "content_mode_reason", "official_sources", "recommended_strategy",
@@ -682,14 +868,10 @@ def openai_json(api_key, model, prompt, schema, max_tokens=8000, retries=2, thin
 
 def ai_json(client, prompt, schema, max_tokens=8000, thinking="low"):
     """
-    AI 공급자 선택부만 담당합니다. 글쓰기/분석 프롬프트와 입력 데이터는 공급자에 따라
-    바꾸지 않습니다. GEMINI는 기존 Gemini 경로를 그대로 사용하고, Gemini 일일 quota
-    초과가 실제로 발생한 경우에만 OpenAI를 대체 경로로 사용합니다.
-
-    OPENAI를 명시적으로 선택한 경우에만 처음부터 OpenAI를 호출합니다.
-    HYBRID는 기존처럼 분석/제목/본문을 서로 다른 모델로 나누지 않고 Gemini 우선으로
-    동작하며, quota 초과 시 OpenAI로 대체합니다. 이렇게 해야 API를 추가한 것 때문에
-    기존 Gemini 글쓰기 결과가 불필요하게 달라지지 않습니다.
+    AI 공급자 선택부입니다. 사이드바에서 선택한 AI가 분석·제목·본문을 모두 작성합니다.
+    - GEMINI: 전부 Gemini로 작성합니다. OpenAI 키가 함께 입력돼 있으면
+      Gemini 일일 quota 초과가 실제로 발생한 경우에만 OpenAI로 대체합니다.
+    - OPENAI: 처음부터 전부 OpenAI로 작성합니다.
     """
     mode = client.get("provider_mode", "GEMINI")
 
@@ -703,7 +885,7 @@ def ai_json(client, prompt, schema, max_tokens=8000, thinking="low"):
             thinking=thinking,
         )
 
-    # GEMINI와 HYBRID는 기존 Gemini 호출을 그대로 유지합니다.
+    # GEMINI: 분석·제목·본문 모두 Gemini로 작성합니다.
     gemini_client = genai.Client(api_key=client.get("gemini_key", ""))
     try:
         return gemini_json(
@@ -872,7 +1054,7 @@ def analyze_with_ai(client, payload):
 
 핵심 원칙:
 1. 사용자가 입력한 키워드는 Creator Advisor에서 이미 선별한 '원본 키워드'입니다. 이 키워드를 분석의 출발점이자 주제의 중심으로 취급하세요.
-2. 원본 키워드 자체의 네이버 검색 데이터(블로그·검색트렌드·뉴스·웹문서·이미지)를 먼저 분석하세요.
+2. 원본 키워드 자체의 네이버 검색 데이터(블로그·검색트렌드·뉴스·웹문서·지식iN)를 먼저 분석하세요.
 2-1. 사용자가 입력한 '추가 검색 표현'이 있다면 각각의 실제 네이버 검색 결과를 별도로 확인하고, 원본 키워드와 같은 주제를 가리키는 표현인지 판단하세요. 이 표현들은 오타·유사명칭·띄어쓰기·통용명칭일 수 있으므로 버리지 말고 검색 유입을 고려한 보조 표현으로 관리하세요.
 2-2. 추가 검색 표현이 실제로 같은 대상을 가리킨다는 근거가 있으면 본문에서 자연스럽게 설명하거나 관련 표현으로 사용할 수 있습니다. 단, 의미가 다른 표현은 억지로 포함하지 마세요.
 2-3. 추가 검색 표현은 원칙적으로 SEO 메인키워드를 바꾸는 용도가 아닙니다. 사용자가 입력한 원본 키워드를 메인키워드로 유지하고, 실제 검색 맥락을 넓히는 보조 표현으로 활용하세요.
@@ -979,21 +1161,27 @@ def analyze_with_ai(client, payload):
 - current_source_facts에는 최소한 글에 실제로 사용할 가치가 높은 사실만 넣고, source_url을 반드시 남기세요.
 - 최신 정보가 부족하면 freshness_warning에 명확히 적으세요.
 
+[실제 독자 질문과 상위 글 구조 활용]
+- kin_questions(지식iN)는 실제 사람들이 이 키워드로 묻는 질문입니다. 반복되거나 중요한 질문을 골라 reader_questions에 5~8개의 자연스러운 구어체 질문 문장으로 정리하세요. 데이터에 근거가 없는 질문을 지어내지 말고, kin_questions가 비어 있으면 블로그·웹문서·연관 키워드에서 확인되는 질문으로 대신하세요.
+- top_blog_structures는 현재 상위 노출 블로그 글의 실제 소제목·분량·표·이미지·FAQ 여부입니다. 상위 글들이 공통으로 다루는 주제(기본으로 갖춰야 할 정보)와 아무도 제대로 다루지 않은 주제를 구분해 content_gaps와 recommended_outline에 반영하세요.
+- 상위 글의 분량과 구성(표·FAQ 유무)을 근거로 competition과 opportunity를 구체적으로 적으세요.
+- is_time_sensitive_topic이 false이면 회차·신청기간 검증은 필요한 경우에만 하고, 검색의도 충족과 정보 차별화에 집중하세요.
+
 [사용자 추가 검색 표현]
-{json.dumps(payload.get("extra_search_terms", []), ensure_ascii=False, indent=2)}
+{json.dumps(payload.get("extra_search_terms", []), ensure_ascii=False)}
 
 [추가 검색 표현별 네이버 검색 데이터]
-{json.dumps(payload.get("additional_search_data", []), ensure_ascii=False, indent=2)}
+{json.dumps(payload.get("additional_search_data", []), ensure_ascii=False)}
 
 [참고/벤치마크 URL]
-{json.dumps(payload.get("benchmark", {}), ensure_ascii=False, indent=2)}
+{json.dumps(compact_benchmark_for_prompt(payload.get("benchmark", {})), ensure_ascii=False)}
 
 [네이버 검색광고 키워드 도구 데이터]
-{json.dumps(payload.get("searchad_keyword_data", []), ensure_ascii=False, indent=2)}
+{json.dumps(payload.get("searchad_keyword_data", []), ensure_ascii=False)}
 - 이 데이터는 검색광고 키워드 도구의 월간 PC/모바일 검색수와 경쟁도입니다. 유기적 네이버 검색 노출량과 동일하다고 단정하지 마세요.
 
 [입력]
-{json.dumps(payload, ensure_ascii=False, indent=2)}
+{json.dumps(compact_analysis_input(payload), ensure_ascii=False)}
 
 여행 콘텐츠 추가 산출 규칙:
 - is_travel_content가 true이면 recommended_outline은 실제 작성할 H2 순서가 되도록 작성하세요. 각 항목은 서로 다른 역할을 가져야 하며 같은 후보/지역을 중복 설명하지 마세요.
@@ -1004,7 +1192,9 @@ def analyze_with_ai(client, payload):
 
 JSON으로만 답하세요.
 """
-    return ai_json(client, prompt, ANALYSIS_SCHEMA, 20000, thinking="medium")
+    specific = payload.get("specific_existing_post") or {}
+    has_specific = specific.get("status") not in (None, "not_provided")
+    return ai_json(client, prompt, analysis_schema_for(has_specific), 20000, thinking="medium")
 
 
 TITLE_SCHEMA = {
@@ -1169,6 +1359,7 @@ def build_writing_context(analysis_payload):
         "long_tail_keywords": compact_list(a.get("long_tail_keywords"), 160, 20),
         "extra_search_terms": compact_list(a.get("extra_search_terms"), 160, 12),
         "title_patterns": compact_list(a.get("title_patterns"), 220, 8),
+        "reader_questions": compact_list(a.get("reader_questions"), 200, 10),
         "current_status": a.get("current_status", {}) or {},
         "freshness_warning": _compact_text(a.get("freshness_warning"), 1000),
         "current_source_facts": compact_list(a.get("current_source_facts"), 1000, 15),
@@ -1249,6 +1440,7 @@ AI 요약은 문단 전체가 아니라 '그 자체로 완결된 한두 문장'�
 6. 핵심 섹션마다 정의형("OO은 ~예요"), 조건형("~라면 ~해야 해요"), 비교형("A는 ~, B는 ~예요") 문장 중 하나 이상을 넣으세요.
 7. 제도·기관·장소·제품은 처음 나올 때 정식 명칭을 쓰고, 이후에는 약칭을 써도 됩니다.
 8. FAQ 질문은 실제로 검색창에 입력할 법한 구어체 질문으로 쓰고, 답변 첫 문장에 결론을 넣은 뒤 2~3문장으로 끝내세요.
+9. reader_questions(실제 독자 질문)를 우선 활용하세요. 본문 H2에서 답한 질문은 H2 직답 문장으로, 본문에서 다루지 못한 질문은 FAQ로 해결하세요. 같은 질문을 H2와 FAQ에 중복하지 마세요.
 
 [검색형(SEARCH) 작성 규칙]
 - 검색 노출의 핵심은 키워드 반복량이 아니라 '검색의도 충족 + 정보 충실성 + 주제 집중도 + 최신성 + 차별 정보'입니다.
@@ -1554,7 +1746,7 @@ def derive_current_status(keyword,current_date,source_pages=None,official_source
         chosen=found[-1]; state='ENDED'; reason=f"현재 기준일 {current_date.isoformat()}에는 확인된 신청기간이 모두 종료되었거나 공식 페이지에서 마감 상태로 확인되었습니다."
     return {'status':state,'current_round':f"{chosen['round']}차",'current_round_state':'현재 신청 중' if state=='ACTIVE' else ('다음 신청' if state=='UPCOMING' else '종료'),'next_round':f"{upcoming[0]['round']}차" if upcoming and upcoming[0]['round']!=chosen['round'] else '','current_status_reason':reason,'rounds':[{'round':f"{x['round']}차",'application_start':x['start'].isoformat(),'application_end':x['end'].isoformat(),'source_url':x['url'],'source_title':x['title'],'explicit_closed':x.get('explicit_closed',False),'explicit_open':x.get('explicit_open',False),'status_evidence':x.get('evidence',[])[:6]} for x in found],'status_evidence':all_status[:15]}
 
-def build_analysis_payload(keyword, category, trend, blog, news, web, images, shopping, benchmark, specific_post=None, blog_id="", current_web=None, source_pages=None, official_source_pages=None, action_pages=None, is_travel_content=False, extra_search_terms=None, additional_search_data=None):
+def build_analysis_payload(keyword, category, trend, blog, news, web, shopping, benchmark, specific_post=None, blog_id="", current_web=None, source_pages=None, official_source_pages=None, action_pages=None, is_travel_content=False, extra_search_terms=None, additional_search_data=None):
     has_specific = bool(specific_post and specific_post.get("status") not in (None, "not_provided"))
     return {
         "keyword": keyword,
@@ -1570,7 +1762,6 @@ def build_analysis_payload(keyword, category, trend, blog, news, web, images, sh
         "source_pages": source_pages or [],
         "current_date": date.today().isoformat(),
         "current_status": derive_current_status(keyword, date.today(), source_pages=source_pages, official_source_pages=[], benchmark=benchmark),
-        "image_results": compact_results(images.get("items", []), ["title", "link", "thumbnail"]),
         "own_blog_id": blog_id,
         "own_existing_posts": [],
         "specific_existing_post": specific_post or {"status": "not_provided"},
@@ -1702,12 +1893,15 @@ naver_secret = st.session_state.naver_secret
 own_blog = st.session_state.own_blog
 
 ai_provider = st.session_state.get("ai_provider", "GEMINI")
+# 이전 버전에서 저장된 혼합(HYBRID) 설정은 Gemini로 정리합니다.
+if ai_provider not in AI_PROVIDER_OPTIONS:
+    ai_provider = "GEMINI"
+    st.session_state["ai_provider"] = "GEMINI"
 gemini_model = st.session_state.get("gemini_model", MODEL).strip() or MODEL
 openai_model = st.session_state.get("openai_model", OPENAI_MODEL).strip() or OPENAI_MODEL
 provider_ready = (
     (ai_provider == "GEMINI" and bool(gemini_key))
     or (ai_provider == "OPENAI" and bool(openai_key))
-    or (ai_provider == "HYBRID" and bool(gemini_key) and bool(openai_key))
 )
 
 def build_ai_config():
@@ -1830,13 +2024,13 @@ length = {
 }.get(content_mode_request, "")
 
 if not provider_ready or not naver_id or not naver_secret:
-    st.title("🔎 네이버 콘텐츠 기회 분석기 V2.6 SEO/GEO")
+    st.title("🔎 네이버 콘텐츠 기회 분석기 V2.7 SEO/GEO")
     st.info("왼쪽 사이드바에서 사용할 AI 방식과 API Key, Naver Client ID / Secret을 입력하면 시작할 수 있어요.")
     st.markdown("""
 ### 이 버전에서 하는 일
 1. Creator Advisor에서 직접 선별한 키워드를 입력
 2. 네이버 검색어 트렌드 분석
-3. 블로그·뉴스·웹·이미지 검색 분석
+3. 블로그·뉴스·웹·지식iN 검색 + 상위 블로그 구조 분석
 4. 필요하면 쇼핑인사이트 분석
 5. 선택한 벤치마크 블로그가 있으면 참고 콘텐츠를 분석
 6. 특정 기존글 URL을 입력한 경우에만 내 콘텐츠 자산과 비교
@@ -1877,6 +2071,16 @@ with c1:
 with c2:
     category = st.selectbox("카테고리", CATEGORIES, index=2)
 
+_auto_time_sensitive = is_time_sensitive_keyword(keyword)
+time_sensitive_topic = st.checkbox(
+    "📅 신청·일정이 있는 주제 (지원금·정책·축제·행사·프로모션)",
+    value=_auto_time_sensitive,
+    key=f"time_sensitive_topic_{_auto_time_sensitive}",
+    help="체크하면 공식 페이지와 신청·예약 링크까지 깊게 확인합니다. 일반 정보 주제는 체크를 해제하면 분석이 훨씬 빨라져요.",
+)
+if _auto_time_sensitive:
+    st.caption("키워드에서 신청·일정형 주제로 자동 감지했어요. 아니라면 체크를 해제해 주세요.")
+
 travel_content = st.checkbox(
     "✈️ 여행글로 작성",
     value=False,
@@ -1912,57 +2116,93 @@ analyze_clicked = st.button(
 if analyze_clicked:
     with st.status("네이버 데이터를 수집하고 콘텐츠 기회를 분석하는 중...", expanded=True) as status:
         try:
-            st.write("① 검색어 트렌드")
-            trend = naver_trend(keyword, naver_id, naver_secret)
+            analysis_started = time.time()
+            is_time_sensitive = bool(time_sensitive_topic)
 
-            st.write("② 블로그 검색")
-            blog = naver_search("blog", keyword, naver_id, naver_secret, display=30, sort="sim")
+            st.write("① 네이버 기본 데이터 (트렌드·블로그·뉴스·웹문서·지식iN) 동시 수집")
 
-            st.write("③ 뉴스 검색")
-            news = naver_search("news", keyword, naver_id, naver_secret, display=10, sort="date")
+            def _safe_kin():
+                try:
+                    return naver_search("kin", keyword, naver_id, naver_secret, display=20, sort="sim")
+                except Exception as kin_error:
+                    return {"items": [], "error": str(kin_error)}
 
-            st.write("④ 웹문서 검색")
-            web = naver_search("webkr", keyword, naver_id, naver_secret, display=10, sort="sim")
+            with ThreadPoolExecutor(max_workers=5) as ex:
+                f_trend = ex.submit(naver_trend, keyword, naver_id, naver_secret)
+                f_blog = ex.submit(naver_search, "blog", keyword, naver_id, naver_secret, 30, "sim")
+                f_news = ex.submit(naver_search, "news", keyword, naver_id, naver_secret, 10, "date")
+                f_web = ex.submit(naver_search, "webkr", keyword, naver_id, naver_secret, 10, "sim")
+                f_kin = ex.submit(_safe_kin)
+                trend = f_trend.result()
+                blog = f_blog.result()
+                news = f_news.result()
+                web = f_web.result()
+                kin = f_kin.result()
+            if kin.get("error"):
+                st.caption("지식iN 질문은 가져오지 못했어요(현재 API 설정에서 미지원일 수 있어요). 나머지 분석은 계속합니다.")
 
             extra_search_terms = normalize_extra_search_terms(extra_search_terms_raw)
             additional_search_data = []
             if extra_search_terms:
-                st.write("⑤ 추가 검색 표현 분석")
+                st.write("② 추가 검색 표현 분석")
                 additional_search_data = collect_additional_search_data(extra_search_terms, naver_id, naver_secret)
 
-            st.write("⑥ 최신·공식 웹문서 보강 검색")
-            current_web = current_web_searches(keyword, naver_id, naver_secret, commercial=commercial, is_travel_content=travel_content)
+            topic_label = "여행" if travel_content else ("신청·일정형" if is_time_sensitive else "일반 정보형")
+            st.write(f"③ 보강 검색 ({topic_label})")
+            current_web = current_web_searches(
+                keyword, naver_id, naver_secret,
+                commercial=commercial, is_travel_content=travel_content, time_sensitive=is_time_sensitive,
+            )
             official_candidates = official_candidate_results(current_web)
-            source_pages = fetch_source_pages(current_web, limit=12)
-            official_source_pages = fetch_source_pages(official_candidates, limit=8)
-            action_seed_pages = list(official_source_pages) + list(source_pages[:6])
-            if benchmark_url.strip():
-                try:
-                    benchmark_seed = fetch_benchmark(benchmark_url)
-                    if benchmark_seed.get("status") == "ok":
-                        action_seed_pages.append(benchmark_seed)
-                except Exception:
-                    pass
-            action_pages = fetch_related_action_pages(action_seed_pages, limit=8)
 
-            st.write("⑦ 이미지 검색")
-            images = naver_search("image", keyword, naver_id, naver_secret, display=10, sort="sim")
+            # 주제 유형별 페이지 확인 범위
+            if is_time_sensitive:
+                source_limit, official_limit, action_limit = 10, 8, 8
+            elif travel_content:
+                source_limit, official_limit, action_limit = 8, 5, 4
+            else:
+                source_limit, official_limit, action_limit = 5, 3, 0
 
-            st.write("⑧ 지정 기존글 확인(선택)")
+            st.write("④ 페이지 본문·상위 블로그 구조 동시 확인")
+            page_cache = {}
+            source_items = current_web[:source_limit]
+            official_items = official_candidates[:official_limit]
+            blog_items = (blog.get("items", []) or [])[:5]
+            urls = [_item_url(x) for x in source_items + official_items]
+            urls += [_naver_blog_mobile_url(x.get("link", "")) for x in blog_items]
+            fetch_raw_pages([u for u in urls if u], page_cache)
+
+            official_source_pages = build_source_pages(official_items, page_cache, limit=official_limit)
+            official_urls = {p["url"] for p in official_source_pages}
+            # 공식 페이지와 겹치는 페이지는 source_pages에서 빼서 AI에 같은 원문이 두 번 들어가지 않게 합니다.
+            source_pages = [
+                p for p in build_source_pages(source_items, page_cache, limit=source_limit)
+                if p["url"] not in official_urls
+            ]
+            top_blog_structures = build_top_blog_structures(blog_items, page_cache, limit=5)
+
+            benchmark = fetch_benchmark(benchmark_url)
+            action_pages = []
+            if action_limit > 0:
+                st.write("⑤ 신청·예약 링크 상태 확인")
+                action_seed_pages = list(official_source_pages) + list(source_pages[:6])
+                if benchmark.get("status") == "ok":
+                    action_seed_pages.append(benchmark)
+                action_pages = fetch_related_action_pages(action_seed_pages, page_cache, limit=action_limit)
+
             blog_id = extract_blog_id(own_blog)
             specific_post = fetch_naver_post(specific_existing_url) if specific_existing_url.strip() else {"status": "not_provided"}
 
             shopping = None
             if commercial and shopping_category.strip():
-                st.write("⑨ 쇼핑인사이트")
+                st.write("⑥ 쇼핑인사이트")
                 shopping = naver_shopping_trend(
                     keyword, shopping_category.strip(), naver_id, naver_secret
                 )
 
-            benchmark = fetch_benchmark(benchmark_url)
             searchad_data = {"keywordList": []}
             if st.session_state.get("searchad_access") and st.session_state.get("searchad_secret") and st.session_state.get("searchad_customer_id"):
-                st.write("⑩ 네이버 검색광고 키워드 도구")
+                st.write("⑦ 네이버 검색광고 키워드 도구")
                 try:
                     searchad_data = naver_searchad_keyword_tool(
                         keyword,
@@ -1975,21 +2215,24 @@ if analyze_clicked:
                     st.warning(f"검색광고 키워드 데이터는 가져오지 못했지만 나머지 분석은 계속합니다: {e}")
 
             payload = build_analysis_payload(
-                keyword, category, trend, blog, news, web, images,
+                keyword, category, trend, blog, news, web,
                 shopping, benchmark, specific_post=specific_post, blog_id=blog_id,
                 current_web=current_web, source_pages=source_pages, official_source_pages=official_source_pages, action_pages=action_pages, is_travel_content=travel_content,
                 extra_search_terms=extra_search_terms, additional_search_data=additional_search_data
             )
+            payload["is_time_sensitive_topic"] = is_time_sensitive
             payload["searchad_keyword_data"] = compact_searchad_keywords(searchad_data, limit=50)
             payload["official_candidate_results"] = compact_results(official_candidates, ["title", "description", "link"])
             payload["official_source_pages"] = official_source_pages
             payload["action_pages"] = action_pages
+            payload["kin_questions"] = compact_results((kin.get("items", []) or [])[:20], ["title", "description"])
+            payload["top_blog_structures"] = top_blog_structures
             payload["current_status"] = derive_current_status(
                 keyword, date.today(), source_pages=source_pages,
                 official_source_pages=official_source_pages, action_pages=action_pages, benchmark=benchmark
             )
 
-            st.write("⑪ AI 콘텐츠 전략 분석")
+            st.write(f"⑧ AI 콘텐츠 전략 분석 (자료 수집 {time.time() - analysis_started:.0f}초)")
             client["active_task"] = "analysis"
             ai = analyze_with_ai(client, payload)
             payload.update(ai)
@@ -2300,6 +2543,28 @@ if analysis:
     c1, c2 = st.columns(2)
     with c1: st.markdown(card5, unsafe_allow_html=True)
     with c2: st.markdown(card6, unsafe_allow_html=True)
+
+    rq = analysis.get("reader_questions", []) or []
+    tops = analysis.get("top_blog_structures", []) or []
+    if rq or tops:
+        q1, q2 = st.columns(2)
+        with q1:
+            with st.expander(f"🙋 실제 독자 질문 ({len(rq)}개)", expanded=False):
+                for q in rq:
+                    st.write(f"• {q}")
+                if not rq:
+                    st.caption("이번 분석에서는 독자 질문을 정리하지 못했어요.")
+        with q2:
+            with st.expander(f"📑 상위 블로그 구조 ({len(tops)}개)", expanded=False):
+                for t in tops:
+                    st.markdown(f"**{t.get('title','')}**")
+                    st.caption(
+                        f"공백 제외 {t.get('char_count',0):,}자 · 이미지 {t.get('image_count',0)} · 표 {t.get('table_count',0)} · FAQ {'있음' if t.get('has_faq') else '없음'}"
+                    )
+                    if t.get("headings"):
+                        st.caption(" / ".join(t.get("headings", [])))
+                if not tops:
+                    st.caption("상위 블로그 본문을 읽지 못했어요.")
 
     st.divider()
     st.subheader("3. 글 작성")
