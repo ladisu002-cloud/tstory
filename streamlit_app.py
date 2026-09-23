@@ -25,7 +25,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 st.set_page_config(
-    page_title="네이버 콘텐츠 기회 분석기 V3.2 SEO/GEO",
+    page_title="네이버 콘텐츠 기회 분석기 V3.4 SEO/GEO",
     page_icon="🔎",
     layout="wide",
 )
@@ -2258,7 +2258,7 @@ length = {
 }.get(content_mode_request, "")
 
 if not provider_ready or not naver_id or not naver_secret:
-    st.title("🔎 네이버 콘텐츠 기회 분석기 V3.2 SEO/GEO")
+    st.title("🔎 네이버 콘텐츠 기회 분석기 V3.4 SEO/GEO")
     st.info("왼쪽 사이드바에서 사용할 AI 방식과 API Key, Naver Client ID / Secret을 입력하면 시작할 수 있어요.")
     st.markdown("""
 ### 이 버전에서 하는 일
@@ -2944,7 +2944,7 @@ def render_rich_copy_button(html_body, plain_text):
     components.html(
         """
 <div style="font-family:sans-serif;">
-<button id="copyBtn" style="padding:8px 14px;border:1px solid #d1d5db;border-radius:8px;background:#fff;cursor:pointer;font-weight:600;">📋 서식 포함 복사</button>
+<button id="copyBtn" style="padding:8px 14px;border:1px solid #d1d5db;border-radius:8px;background:#fff;cursor:pointer;font-weight:600;">📋 스마트에디터 서식 복사 (인용구 포함)</button>
 <span id="copyMsg" style="margin-left:8px;font-size:13px;color:#16a34a;"></span>
 <div id="copySrc" contenteditable="true" style="position:absolute;left:-99999px;top:0;"></div>
 </div>
@@ -3145,9 +3145,34 @@ if article:
     st.code(smart_text, language=None)
 
     st.markdown("### 📤 네이버 스마트에디터로 보내기")
-    editor_content = build_editor_content(article)
-    st.caption("소제목·굵게·표·링크 서식을 유지한 채 복사해요. 위의 텍스트 복사보다 붙여넣은 뒤 손볼 곳이 적어요.")
-    render_rich_copy_button(editor_content["html"], editor_content["plain"])
+    with st.expander("✏️ 스마트에디터 서식 설정 (기본값: 내가 발행한 글 서식)", expanded=False):
+        quote_names = {
+            "default": "따옴표", "quotation_line": "버티컬 라인", "quotation_bubble": "말풍선",
+            "quotation_underline": "라인&따옴표", "quotation_postit": "포스트잇", "quotation_corner": "프레임",
+        }
+        qkeys = list(quote_names)
+        sc1, sc2, sc3 = st.columns(3)
+        with sc1:
+            se_align = st.radio("본문 정렬", ["왼쪽", "가운데"], horizontal=True, key="se_align")
+            se_font = st.selectbox("본문 글자 크기", [15, 16, 19], index=1, key="se_font")
+        with sc2:
+            se_h2 = st.selectbox("소제목 인용구", qkeys, index=qkeys.index("default"), format_func=quote_names.get, key="se_h2")
+            se_h3 = st.selectbox("작은 소제목 인용구", qkeys, index=qkeys.index("quotation_line"), format_func=quote_names.get, key="se_h3")
+            se_sum = st.selectbox("핵심 요약 인용구", qkeys, index=qkeys.index("quotation_bubble"), format_func=quote_names.get, key="se_sum")
+        with sc3:
+            se_toc = st.selectbox("목차 인용구", qkeys, index=qkeys.index("quotation_postit"), format_func=quote_names.get, key="se_toc")
+            se_faq_pos = st.radio("FAQ 위치", ["글 맨 끝", "마지막 정리 앞"], horizontal=True, key="se_faq_pos")
+            se_img = st.checkbox("이미지 넣을 자리 표시", value=True, key="se_img")
+    se_style = {
+        "align": "center" if se_align == "가운데" else "",
+        "font_size": se_font,
+        "h2_quote": se_h2, "h3_quote": se_h3, "summary_quote": se_sum, "toc_quote": se_toc,
+        "faq_position": "end" if se_faq_pos == "글 맨 끝" else "before_summary",
+        "image_placeholders": se_img,
+    }
+    editor_content = build_editor_content(article, se_style)
+    st.caption("인용구(소제목·핵심 요약·목차·FAQ), 줄간격, 문단 사이 빈 줄, 표, 링크 강조까지 스마트에디터 서식으로 복사해요. 스마트에디터 본문을 클릭하고 Ctrl+V 하세요.")
+    render_rich_copy_button(editor_content["se_html"], editor_content["plain"])
 
     if playwright_available():
         st.caption("내 컴퓨터의 Chrome으로 네이버 글쓰기 화면을 열고 제목·본문을 자동으로 넣어요. **발행은 하지 않아요.** 창은 열어둔 채로 두니 확인·수정·이미지 삽입 후 직접 발행하세요.")
@@ -3161,7 +3186,11 @@ if article:
             )
         with nc2:
             naver_save_draft = st.checkbox("입력 후 임시저장", value=True, key="naver_save_draft")
-        if st.button("🚀 스마트에디터에 입력하기 (발행 안 함)", disabled=not naver_blog_id.strip()):
+        prev_proc = st.session_state.get("naver_proc")
+        proc_running = prev_proc is not None and prev_proc.poll() is None
+        if proc_running:
+            st.warning("자동 입력용 Chrome 창이 아직 열려 있어요. 다시 입력하려면 그 창을 먼저 닫아주세요.")
+        if st.button("🚀 스마트에디터에 입력하기 (발행 안 함)", disabled=(not naver_blog_id.strip()) or proc_running):
             st.session_state.naver_blog_id_value = naver_blog_id.strip()
             status_path = os.path.join(tempfile.gettempdir(), "naver_editor_status.log")
             with open(status_path, "w", encoding="utf-8") as f:
@@ -3172,13 +3201,21 @@ if article:
                     "blog_id": naver_blog_id.strip(),
                     "title": editor_content["title"],
                     "html": editor_content["html"],
+                    "se_html": editor_content["se_html"],
                     "plain": editor_content["plain"],
                     "save_draft": naver_save_draft,
                     "status_path": status_path,
                 }, f, ensure_ascii=False)
             script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "naver_editor.py")
-            subprocess.Popen([sys.executable, script_path, payload_path])
+            error_path = os.path.join(tempfile.gettempdir(), "naver_editor_error.log")
+            env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
+            err_file = open(error_path, "w", encoding="utf-8")
+            st.session_state.naver_proc = subprocess.Popen(
+                [sys.executable, script_path, payload_path],
+                stdout=err_file, stderr=subprocess.STDOUT, env=env,
+            )
             st.session_state.naver_status_path = status_path
+            st.session_state.naver_error_path = error_path
             st.info("Chrome 창이 열려요. 처음 한 번은 그 창에서 네이버에 직접 로그인해 주세요.")
         if st.session_state.get("naver_status_path"):
             if st.button("🔄 입력 진행 상황 보기"):
@@ -3189,6 +3226,17 @@ if article:
             except Exception:
                 log_text = ""
             st.code(log_text or "시작 중…", language=None)
+            # 스크립트가 예기치 않게 멈췄다면 오류 내용을 보여줍니다.
+            proc = st.session_state.get("naver_proc")
+            if proc is not None and proc.poll() is not None and proc.returncode not in (0, None):
+                try:
+                    with open(st.session_state.get("naver_error_path", ""), encoding="utf-8", errors="replace") as f:
+                        err_tail = f.read()[-2000:]
+                except Exception:
+                    err_tail = ""
+                if err_tail.strip():
+                    st.error("자동 입력 스크립트가 오류로 멈췄어요. 아래 내용을 캡처해서 보여주세요.")
+                    st.code(err_tail, language=None)
     else:
         st.caption("자동 입력은 내 컴퓨터에서 앱을 실행하고 `pip install playwright`를 설치했을 때만 나타나요. 지금은 '서식 포함 복사'를 사용해 주세요.")
 
