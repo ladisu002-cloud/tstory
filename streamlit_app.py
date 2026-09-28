@@ -25,7 +25,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 st.set_page_config(
-    page_title="네이버 콘텐츠 기회 분석기 V3.4 SEO/GEO",
+    page_title="네이버 콘텐츠 기회 분석기 V3.5 SEO/GEO",
     page_icon="🔎",
     layout="wide",
 )
@@ -2100,6 +2100,7 @@ def fetch_naver_post(url):
 
 # 내 PC 실행 여부: 자동 입력 도구(playwright)가 설치돼 있으면 로컬 실행으로 봅니다.
 IS_LOCAL_RUN = playwright_available()
+APP_VERSION = "V3.5"
 ENV_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 ENV_KEY_MAP = {
     "gemini_key": "GEMINI_API_KEY",
@@ -2188,7 +2189,24 @@ def build_ai_config():
 
 with st.sidebar:
     st.header("⚙️ 설정")
-    st.caption("AI API와 NAVER API를 이 브라우저 세션에서 설정해 사용할 수 있습니다. API 키 자체는 GitHub 코드에 저장하지 않습니다.")
+    # 저장 상태를 항상 위쪽에 보여줍니다(메시지를 놓쳐도 확인 가능하도록).
+    _env_saved = {}
+    if IS_LOCAL_RUN and os.path.exists(ENV_FILE_PATH):
+        try:
+            with open(ENV_FILE_PATH, encoding="utf-8") as _f:
+                for _line in _f:
+                    if "=" in _line:
+                        _k, _v = _line.split("=", 1)
+                        _env_saved[_k.strip()] = bool(_v.strip())
+        except Exception:
+            pass
+    if IS_LOCAL_RUN:
+        _labels = [("Gemini", "GEMINI_API_KEY"), ("OpenAI", "OPENAI_API_KEY"), ("네이버", "NAVER_CLIENT_ID"), ("검색광고", "NAVER_SEARCHAD_ACCESS_LICENSE")]
+        _status = " · ".join(f"{name} {'✅' if _env_saved.get(env) else '—'}" for name, env in _labels)
+        st.info(f"💾 키 저장 위치: **이 PC (.env)**\n\n저장된 키: {_status}")
+    else:
+        st.warning("💾 키 저장 위치: **현재 세션만** (새로고침하면 사라져요). 클라우드에서는 Manage app → Settings → Secrets에 넣어야 유지돼요.")
+    st.caption(f"앱 버전: {APP_VERSION}")
 
     with st.form("api_settings_form", clear_on_submit=False):
         st.selectbox(
@@ -2233,10 +2251,12 @@ with st.sidebar:
                     for key, env in ENV_KEY_MAP.items()
                 })
                 st.success(f"설정을 이 PC(.env)에 저장했어요. 다음에 실행할 때도 그대로 불러와요. · {AI_PROVIDER_LABELS.get(st.session_state.ai_provider, st.session_state.ai_provider)}")
+                st.toast("💾 설정을 이 PC(.env)에 저장했어요", icon="✅")
             except Exception as e:
                 st.warning(f"현재 세션에는 저장됐지만 .env 파일 저장에 실패했어요: {e}")
         else:
             st.success(f"설정이 현재 세션에 저장됐어요. · {AI_PROVIDER_LABELS.get(st.session_state.ai_provider, st.session_state.ai_provider)}")
+            st.toast("현재 세션에만 저장됐어요 (새로고침하면 사라져요)", icon="⚠️")
 
     if st.session_state.credentials_saved:
         st.caption("🟢 저장된 API 설정을 사용 중입니다.")
@@ -2308,7 +2328,7 @@ length = {
 }.get(content_mode_request, "")
 
 if not provider_ready or not naver_id or not naver_secret:
-    st.title("🔎 네이버 콘텐츠 기회 분석기 V3.4 SEO/GEO")
+    st.title("🔎 네이버 콘텐츠 기회 분석기 V3.5 SEO/GEO")
     st.info("왼쪽 사이드바에서 사용할 AI 방식과 API Key, Naver Client ID / Secret을 입력하면 시작할 수 있어요.")
     st.markdown("""
 ### 이 버전에서 하는 일
