@@ -25,7 +25,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 st.set_page_config(
-    page_title="네이버 콘텐츠 기회 분석기 V3.6 SEO/GEO",
+    page_title="네이버 콘텐츠 기회 분석기 V3.7 SEO/GEO",
     page_icon="🔎",
     layout="wide",
 )
@@ -1477,7 +1477,7 @@ def write_with_ai(client, analysis_payload, writing_options):
 - 독자는 조사 과정이 아니라 결과가 궁금합니다. "무엇이 확인됐고 무엇이 확인 안 됐는지"를 설명하지 말고, "그래서 언제·어디서·어떻게 하면 좋은지"를 알려주세요.
 - 사실 확인은 글을 쓰기 전에 끝내는 작업입니다. 근거가 확인된 정보만 자신 있게 쓰고, 확인되지 않은 정보는 언급하지 말고 빼세요. 빠진 정보를 "아직 확인되지 않았어요", "확정된 것은 아니에요"라고 하나하나 설명하지 마세요.
 - 변동 가능성 안내는 글 전체에서 딱 한 번, 마무리 부분에 "방문 전 공식 홈페이지 공지를 한 번 더 확인해 보세요"처럼 짧게만 쓰세요.
-- 출처 표기도 최소화하세요. "공식 홈페이지 기준으로 정리했어요"는 기준일 줄 근처에 한 번이면 충분해요. 모든 문장에 "공식 페이지에 안내돼 있어요", "~로 표시돼 있어요"를 붙이지 마세요.
+- 출처 표기도 최소화하세요. "공식 홈페이지 기준으로 정리했어요"는 도입부에 한 번이면 충분해요. 모든 문장에 "공식 페이지에 안내돼 있어요", "~로 표시돼 있어요"를 붙이지 마세요.
 - 소제목은 조사 항목이 아니라 독자가 궁금한 것으로 쓰세요.
   - 좋은 예: '언제 가면 좋을까', '꼭 봐야 할 공연', '주차와 교통', '아이와 간다면'
   - 나쁜 예: '공식 명칭과 일정 확인', '프로그램 확인', '공간 구분'
@@ -1506,8 +1506,8 @@ def write_with_ai(client, analysis_payload, writing_options):
 
 [AI 브리핑·생성형 검색 인용 구조 — 모든 유형 공통]
 AI 요약은 문단 전체가 아니라 '그 자체로 완결된 한두 문장'을 가져갑니다. 아래 규칙으로 인용되기 쉬운 문장을 만드세요.
-1. 서론(2~4문단)이 끝난 바로 다음 줄에 `업데이트 기준일: {current_date_kr} (공식 홈페이지 기준)` 한 줄을 넣으세요. 공식 출처가 없는 주제라면 괄호 부분은 빼세요.
-2. SEARCH/HYBRID는 기준일 줄 다음에 아래 형식의 핵심 요약을 넣고, 그 뒤에 목차를 넣으세요.
+1. '업데이트 기준일: ○○' 같은 별도 줄은 넣지 마세요. SEARCH/HYBRID는 도입부나 핵심 요약 첫 줄에 '{current_date_kr[:current_date_kr.find('월')+1]} 기준'처럼 시점을 문장 안에 자연스럽게 한 번만 넣으세요. HOME_FEED는 기준 시점 표기 없이, 방송일·발표일 같은 사건 날짜만 필요할 때 자연스럽게 쓰세요.
+2. SEARCH/HYBRID는 서론 다음에 아래 형식의 핵심 요약을 넣고, 그 뒤에 목차를 넣으세요.
    **📌 핵심 요약**
    - (완결 문장 1: 주어 + 핵심 사실 + 숫자/조건)
    - (완결 문장 2)
@@ -1633,7 +1633,7 @@ A. 제목의 핵심 약속이 본문 첫 30% 안에서 해결되기 시작한다
 B. 분석된 핵심 질문과 content_gaps가 구체적인 정보로 반영된다.
 C. 숫자·날짜·가격·조건이 근거 데이터와 일치하고, 끝난 회차를 현재처럼 쓰지 않는다.
 D. reader_questions가 본문 또는 FAQ에서 모두 답해졌고, 제목·독자 질문과 무관한 문단이나 키워드 반복·AI식 반복 문장이 없다.
-E. 기준일 줄, (SEARCH/HYBRID) 핵심 요약, H2별 직답 문장이 있다.
+E. (SEARCH/HYBRID) 시점 표기 1회, 핵심 요약, H2별 직답 문장이 있다.
 F. 처음부터 끝까지 해요체를 유지한다.
 G. 조사 보고서가 아니라 블로그 글로 읽힌다. 유보·검증 표현이 반복되지 않고, 소제목이 독자의 궁금증으로 쓰여 있다.
 
@@ -1692,7 +1692,7 @@ def seo_check(article, analysis):
 
     # AI 브리핑 인용 구조: 기준일, 핵심 요약, H2 직답 문장
     head = text[:2000]
-    date_ok = bool(re.search(r"업데이트\s*기준일|\d{4}년\s*\d{1,2}월\s*\d{1,2}일\s*기준", head))
+    date_ok = (mode == "HOME_FEED") or bool(re.search(r"\d{4}년\s*\d{1,2}월(?:\s*\d{1,2}일)?\s*기준|업데이트\s*기준일", head))
     summary_ok = (mode == "HOME_FEED") or ("핵심 요약" in head)
     lines = text.split("\n")
     direct_total, direct_good = 0, 0
@@ -1791,7 +1791,7 @@ def seo_check(article, analysis):
         "제목 메인키워드 포함": title_keyword_ok,
         "제목 약속 본문 반영": title_overlap >= max(1, min(3, len(title_words))),
         "도입부 메인키워드 반영": intro_keyword_ok,
-        "업데이트 기준일 명시": date_ok,
+        ("최신 시점 표기" if mode != "HOME_FEED" else "최신 시점 표기(홈판 생략)"): date_ok,
         ("핵심 요약 블록" if mode != "HOME_FEED" else "핵심 요약 블록(홈판 생략)"): summary_ok,
         f"H2 직답 문장 ({direct_good}/{direct_total})": direct_ok,
         gap_label: gap_ok,
@@ -2121,7 +2121,7 @@ def fetch_naver_post(url):
 
 # 내 PC 실행 여부: 자동 입력 도구(playwright)가 설치돼 있으면 로컬 실행으로 봅니다.
 IS_LOCAL_RUN = playwright_available()
-APP_VERSION = "V3.6"
+APP_VERSION = "V3.7"
 ENV_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 ENV_KEY_MAP = {
     "gemini_key": "GEMINI_API_KEY",
@@ -2349,7 +2349,7 @@ length = {
 }.get(content_mode_request, "")
 
 if not provider_ready or not naver_id or not naver_secret:
-    st.title("🔎 네이버 콘텐츠 기회 분석기 V3.6 SEO/GEO")
+    st.title("🔎 네이버 콘텐츠 기회 분석기 V3.7 SEO/GEO")
     st.info("왼쪽 사이드바에서 사용할 AI 방식과 API Key, Naver Client ID / Secret을 입력하면 시작할 수 있어요.")
     st.markdown("""
 ### 이 버전에서 하는 일
