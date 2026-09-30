@@ -25,7 +25,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 st.set_page_config(
-    page_title="네이버 콘텐츠 기회 분석기 V4.0 SEO/GEO",
+    page_title="네이버 콘텐츠 기회 분석기 V4.2 SEO/GEO",
     page_icon="🔎",
     layout="wide",
 )
@@ -1478,6 +1478,35 @@ def _korean_date(iso_value):
         return f"{d.year}년 {d.month}월 {d.day}일"
 
 
+def detect_body_truncation(body, min_chars=0):
+    """본문이 중간에 끊겼거나 목표보다 크게 짧은지 확인합니다. 문제 없으면 빈 문자열."""
+    body = (body or "").strip()
+    if not body:
+        return "본문이 비어 있어요."
+    lines = body.split("\n")
+    toc_items, in_toc = [], False
+    for ln in lines:
+        t = ln.strip()
+        if re.match(r"^#{1,3}\s*목차\s*$", t):
+            in_toc = True
+            continue
+        if in_toc:
+            if re.match(r"^\d+\.\s+", t):
+                toc_items.append(t)
+            elif t.startswith("#"):
+                in_toc = False
+    h2 = [ln for ln in lines if re.match(r"^##\s+(?!목차)", ln.strip())]
+    if toc_items and len(h2) < len(toc_items):
+        return f"목차는 {len(toc_items)}개인데 본문 소제목은 {len(h2)}개예요. 본문이 중간에 끊긴 것 같아요."
+    last = [ln.strip() for ln in lines if ln.strip() and not ln.strip().startswith(("#", "|", "-", "*"))]
+    if last and not re.search(r"[.!?~)\]\"'”’…요다죠네]$", last[-1]):
+        return "마지막 문장이 중간에 끊겨 있어요."
+    n = len(re.sub(r"\s", "", body))
+    if min_chars and n < int(min_chars * 0.75):
+        return f"본문이 공백 제외 {n:,}자로 목표({min_chars:,}자 이상)보다 많이 짧아요."
+    return ""
+
+
 def write_with_ai(client, analysis_payload, writing_options):
     selected_title = writing_options.get("selected_title", "").strip()
     main_keyword = analysis_payload.get("main_keyword") or analysis_payload["keyword"]
@@ -1658,6 +1687,11 @@ AI 요약은 문단 전체가 아니라 '그 자체로 완결된 한두 문장'�
 [작성용 핵심 분석 데이터]
 검색 적합도: {analysis_payload.get("search_fit_score", 0)} / 홈판 적합도: {analysis_payload.get("home_feed_fit_score", 0)}
 {json.dumps(build_writing_context(analysis_payload), ensure_ascii=False, indent=2)}
+
+[따옴표 규칙 — 출력이 잘리지 않도록 반드시 지킬 것]
+- 본문과 모든 필드에서 곧은 큰따옴표(\")를 쓰지 마세요. 인용·강조·검색어 표기는 작은따옴표(' ') 또는 둥근 따옴표(“ ”)를 쓰세요.
+  예: '쿠팡체험단 신청'을 검색하는 분이 많아요 / “정각 접속이 중요해요”
+- 곧은 큰따옴표가 들어가면 응답 형식이 깨져 본문 뒷부분이 통째로 사라질 수 있습니다.
 
 [작성 기준 — 처음부터 지키며 한 번에 쓰세요]
 초안을 여러 번 다시 쓰지 말고, 아래 기준을 지키며 한 번에 완성본을 쓰세요.
@@ -2154,7 +2188,7 @@ def fetch_naver_post(url):
 
 # 내 PC 실행 여부: 자동 입력 도구(playwright)가 설치돼 있으면 로컬 실행으로 봅니다.
 IS_LOCAL_RUN = playwright_available()
-APP_VERSION = "V4.0"
+APP_VERSION = "V4.2"
 ENV_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 ENV_KEY_MAP = {
     "gemini_key": "GEMINI_API_KEY",
@@ -2382,7 +2416,7 @@ length = {
 }.get(content_mode_request, "")
 
 if not provider_ready or not naver_id or not naver_secret:
-    st.title("🔎 네이버 콘텐츠 기회 분석기 V4.0 SEO/GEO")
+    st.title("🔎 네이버 콘텐츠 기회 분석기 V4.2 SEO/GEO")
     st.info("왼쪽 사이드바에서 사용할 AI 방식과 API Key, Naver Client ID / Secret을 입력하면 시작할 수 있어요.")
     st.markdown("""
 ### 이 버전에서 하는 일
@@ -3049,10 +3083,8 @@ if analysis:
                     "HYBRID": "공백 제외 2500~3500자",
                 }[selected_mode]
                 client["active_task"] = "writing"
-                article = write_with_ai(
-                    client,
-                    analysis,
-                    {"category": category, "tone": tone, "length": selected_length,
+                min_chars = {"HOME_FEED": 1500, "SEARCH": 3000, "HYBRID": 2500}.get(selected_mode, 0)
+                write_options = {"category": category, "tone": tone, "length": selected_length,
                      "content_mode": selected_mode,
                      "selected_title": selected_title,
                      "selected_title_reason": st.session_state.get("selected_title_reason", ""),
@@ -3060,8 +3092,19 @@ if analysis:
                      "direct_experience_text": st.session_state.get("direct_experience_text", "").strip() if st.session_state.get("direct_experience_enabled", False) else "",
                      "user_supplied_facts": st.session_state.get("user_supplied_facts", "").strip(),
                      "include_faq": include_faq,
-                     "include_summary": include_summary},
-                )
+                     "include_summary": include_summary}
+                article = write_with_ai(client, analysis, write_options)
+                problem = detect_body_truncation(article.get("body_markdown", ""), min_chars)
+                if problem:
+                    # 본문이 끊겼거나 너무 짧으면 한 번 더 작성하고, 더 나은 쪽을 씁니다.
+                    st.info(f"본문을 다시 작성하고 있어요 ({problem})")
+                    retry = write_with_ai(client, analysis, write_options)
+                    retry_problem = detect_body_truncation(retry.get("body_markdown", ""), min_chars)
+                    len_a = len(re.sub(r"\s", "", article.get("body_markdown", "")))
+                    len_b = len(re.sub(r"\s", "", retry.get("body_markdown", "")))
+                    if (not retry_problem) or (len_b > len_a):
+                        article, problem = retry, retry_problem
+                article["truncation_warning"] = problem
                 # 사용자가 선택한 제목과 분석에서 확정한 메인키워드를 실제 발행 데이터에 고정합니다.
                 if selected_title:
                     article["seo_title"] = selected_title
@@ -3199,6 +3242,8 @@ if st.session_state.get("article_history"):
 if article:
     st.divider()
     st.subheader("4. 최종 콘텐츠")
+    if article.get("truncation_warning"):
+        st.error(f"⚠️ {article['truncation_warning']} 다시 작성해도 해결되지 않았어요. '선택한 제목으로 글 작성'을 한 번 더 눌러주세요.")
 
     st.markdown("### 🧭 작성 유형")
     st.info(f"{article.get('content_mode', analysis.get('recommended_content_mode', 'SEARCH'))} · {article.get('target_length_rule', length)} · 공백 제외 {article.get('character_count', len(re.sub(r'\s', '', article.get('body_markdown', '')))):,}자")
