@@ -25,7 +25,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 st.set_page_config(
-    page_title="네이버 콘텐츠 기회 분석기 V3.7 SEO/GEO",
+    page_title="네이버 콘텐츠 기회 분석기 V3.9 SEO/GEO",
     page_icon="🔎",
     layout="wide",
 )
@@ -1238,9 +1238,11 @@ TITLE_SCHEMA = {
                 },
                 "required": ["title", "angle", "why"],
             },
-        }
+        },
+        "best_index": {"type": "INTEGER"},
+        "best_reason": {"type": "STRING"},
     },
-    "required": ["titles"],
+    "required": ["titles", "best_index", "best_reason"],
 }
 
 def generate_titles_for_mode(client, analysis_payload, mode, direct_experience_enabled=False, direct_experience_text=""):
@@ -1308,6 +1310,13 @@ def generate_titles_for_mode(client, analysis_payload, mode, direct_experience_e
 - 입력되지 않은 경험·결과·감정·수치·날짜를 지어내지 마세요.
 - 직접 경험을 사용 안 함으로 선택한 경우, 개인의 방문·구매·사용 경험이 있는 것처럼 제목을 만들지 마세요.
 
+[직접 경험이 있을 때 제목의 약속 — 반드시 지킬 것]
+- 제목의 핵심 약속(성과·노하우·후기)은 경험 내용에서 나와야 합니다. 경험에 없는 성공이나 노하우(예: 경험에 '고가 당첨 실패'가 있는데 '고가 선점 노하우', '고가 당첨 조건')를 제목에 약속하지 마세요.
+- 참고/벤치마크 URL, 경쟁 블로그, 지식iN에 나온 다른 사람의 경험·성과를 제목의 각도로 가져오지 마세요. 그런 내용은 사용자의 경험이 아닙니다.
+- 경험 속 실패·아쉬움·실수도 좋은 클릭 소재입니다(예: 연속 당첨했지만 알림을 늦게 봐서 놓친 일). 성공만 골라 과장하지 마세요.
+- 경험과 직접 관련 없는 정보 주제(예: 스미싱 구별법, 리뷰 작성법 일반론)는 제목의 중심으로 삼지 말고 본문 보조 정보로만 다루세요.
+- 3개 중 최소 2개는 경험에서 가장 강한 사실(예: 연속 당첨 횟수·기간, 놓친 이유)을 앞세우세요.
+
 원본 입력 키워드: {analysis_payload.get("keyword", "")}
 SEO 메인키워드: {analysis_payload.get("main_keyword") or analysis_payload.get("keyword", "")}
 메인키워드 선정 근거: {analysis_payload.get("main_keyword_evidence", "")}
@@ -1321,6 +1330,11 @@ SEO 메인키워드: {analysis_payload.get("main_keyword") or analysis_payload.g
 검색광고 키워드 데이터: {json.dumps(analysis_payload.get("searchad_keyword_data", []), ensure_ascii=False)}
 현재 근거: {json.dumps(analysis_payload.get("current_source_facts", []), ensure_ascii=False)}
 
+[가장 추천하는 제목 고르기]
+- 3개 중 '{mode_label}' 작성 유형에서 노출 가능성이 가장 높다고 판단하는 제목 하나를 골라 best_index에 번호(1, 2, 3 중 하나)로 적으세요.
+- 판단 기준: 검색형은 검색량 있는 키워드·검색 의도 일치·정보 약속의 명확성, 홈판형은 클릭 이유의 강도·독자층의 넓이·본문에서 약속을 회수할 수 있는지, 혼합형은 두 기준의 균형을 보세요. 직접 경험이 제공됐다면 그 경험을 가장 잘 살리는 제목에 가산점을 주고, 경험에 없는 성과·노하우를 약속하는 제목은 추천하지 마세요.
+- best_reason에는 다른 두 제목과 비교해 왜 이 제목이 가장 나은지 한두 문장으로 적으세요.
+
 JSON으로만 답하세요.
 """
     result = ai_json(client, prompt, TITLE_SCHEMA, 4000, thinking="low")
@@ -1333,6 +1347,17 @@ JSON으로만 답하세요.
             if title and main_keyword not in title:
                 item["title"] = f"{main_keyword} {title}"
                 item["why"] = (str(item.get("why", "")).strip() + " 메인키워드를 제목에 고정했습니다.").strip()
+    # 가장 추천하는 제목 표시(1부터 시작하는 번호). 범위를 벗어나면 첫 번째를 추천으로 둡니다.
+    try:
+        best = int(result.get("best_index", 1)) - 1
+    except Exception:
+        best = 0
+    if not (0 <= best < len(titles)):
+        best = 0
+    for i, item in enumerate(titles):
+        item["recommended"] = (i == best)
+        if i == best:
+            item["recommend_reason"] = str(result.get("best_reason", "")).strip()
     return titles
 
 def _compact_text(value, limit=1200):
@@ -1599,6 +1624,9 @@ AI 요약은 문단 전체가 아니라 '그 자체로 완결된 한두 문장'�
 - 내용: {writing_options.get("direct_experience_text", "").strip() or "제공되지 않음. 개인 경험을 지어내 1인칭으로 쓰지 마세요."}
 - 경험이 제공된 경우에만 1인칭 경험담으로 쓰고, 경험에 없는 날짜·금액·처리기간·감정·결과를 추가하지 마세요.
 - 경험 문단은 구체적인 행동과 결과 중심으로 쓰고, 제도 자체의 조건·금액은 공식 근거로 따로 설명해 구분하세요. 네이버는 실제 경험 정보를 별도로 평가합니다.
+- 참고/벤치마크 글이나 다른 블로그에 나온 경험·성과·노하우를 사용자의 경험처럼 쓰지 마세요. 필요하면 "다른 후기를 보면 ~라는 이야기도 있어요"처럼 남의 이야기임을 분명히 하세요.
+- 경험에 없는 성공 노하우를 사용자가 직접 해본 것처럼 쓰지 마세요. 일반적으로 알려진 팁은 "일반적으로 알려진 방법"으로 구분해 쓰세요.
+- 실패·아쉬움이 포함된 경험은 숨기지 말고 솔직하게 살리세요. 독자는 성공담보다 실수에서 더 많이 배웁니다.
 
 [메인키워드 SEO 규칙]
 - SEO 메인 키워드는 반드시 `{main_keyword}`입니다. 다른 키워드로 바꾸지 마세요.
@@ -2121,7 +2149,7 @@ def fetch_naver_post(url):
 
 # 내 PC 실행 여부: 자동 입력 도구(playwright)가 설치돼 있으면 로컬 실행으로 봅니다.
 IS_LOCAL_RUN = playwright_available()
-APP_VERSION = "V3.7"
+APP_VERSION = "V3.9"
 ENV_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 ENV_KEY_MAP = {
     "gemini_key": "GEMINI_API_KEY",
@@ -2349,7 +2377,7 @@ length = {
 }.get(content_mode_request, "")
 
 if not provider_ready or not naver_id or not naver_secret:
-    st.title("🔎 네이버 콘텐츠 기회 분석기 V3.7 SEO/GEO")
+    st.title("🔎 네이버 콘텐츠 기회 분석기 V3.9 SEO/GEO")
     st.info("왼쪽 사이드바에서 사용할 AI 방식과 API Key, Naver Client ID / Secret을 입력하면 시작할 수 있어요.")
     st.markdown("""
 ### 이 버전에서 하는 일
@@ -2771,8 +2799,11 @@ if analysis:
                         direct_experience_text=direct_experience_text,
                     )
                     if st.session_state.title_options:
-                        st.session_state.selected_title = st.session_state.title_options[0].get("title", "")
-                        st.session_state.selected_title_reason = st.session_state.title_options[0].get("why", "")
+                        # 가장 추천하는 제목을 기본 선택으로 둡니다.
+                        best_obj = next((x for x in st.session_state.title_options if x.get("recommended")), st.session_state.title_options[0])
+                        st.session_state.selected_title = best_obj.get("title", "")
+                        st.session_state.selected_title_reason = best_obj.get("why", "")
+                        st.session_state.pop("selected_title_radio", None)
                     else:
                         st.warning("추천 제목을 생성하지 못했습니다.")
                 except Exception as e:
@@ -2785,7 +2816,20 @@ if analysis:
             current = st.session_state.get("selected_title", labels[0])
             if current not in labels:
                 current = labels[0]
-            selected = st.radio("작성할 제목 선택", labels, index=labels.index(current), key="selected_title_radio")
+            best_obj = next((x for x in title_options if x.get("recommended")), None)
+            best_title = best_obj.get("title", "").strip() if best_obj else ""
+            mode_name = {"SEARCH": "검색형", "HOME_FEED": "홈판형", "HYBRID": "혼합형"}.get(st.session_state.get("selected_content_mode", ""), "선택한 작성 유형")
+            if best_title:
+                st.success(f"⭐ {mode_name} 추천 제목: **{best_title}**")
+                if best_obj.get("recommend_reason"):
+                    st.caption(f"추천 이유: {best_obj.get('recommend_reason')}")
+            selected = st.radio(
+                "작성할 제목 선택",
+                labels,
+                index=labels.index(current),
+                key="selected_title_radio",
+                format_func=lambda t: f"⭐ {t}  (추천)" if t == best_title else t,
+            )
             st.session_state.selected_title = selected
             selected_obj = next((x for x in title_options if x.get("title", "").strip() == selected), {})
             st.session_state.selected_title_reason = selected_obj.get("why", "")
