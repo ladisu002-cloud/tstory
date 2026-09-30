@@ -25,7 +25,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 st.set_page_config(
-    page_title="네이버 콘텐츠 기회 분석기 V3.9 SEO/GEO",
+    page_title="네이버 콘텐츠 기회 분석기 V4.0 SEO/GEO",
     page_icon="🔎",
     layout="wide",
 )
@@ -1501,7 +1501,7 @@ def write_with_ai(client, analysis_payload, writing_options):
 [글의 성격 — 보고서가 아니라 블로그 글]
 - 독자는 조사 과정이 아니라 결과가 궁금합니다. "무엇이 확인됐고 무엇이 확인 안 됐는지"를 설명하지 말고, "그래서 언제·어디서·어떻게 하면 좋은지"를 알려주세요.
 - 사실 확인은 글을 쓰기 전에 끝내는 작업입니다. 근거가 확인된 정보만 자신 있게 쓰고, 확인되지 않은 정보는 언급하지 말고 빼세요. 빠진 정보를 "아직 확인되지 않았어요", "확정된 것은 아니에요"라고 하나하나 설명하지 마세요.
-- 변동 가능성 안내는 글 전체에서 딱 한 번, 마무리 부분에 "방문 전 공식 홈페이지 공지를 한 번 더 확인해 보세요"처럼 짧게만 쓰세요.
+- 변동 가능성 안내는 신청·일정·가격처럼 바뀌는 정보가 있을 때만, 글 전체에서 딱 한 번, 마무리 부분에 "최신 내용은 공식 공지에서 한 번 더 확인해 보세요"처럼 주제에 맞게 짧게 쓰세요. 방문하는 장소가 아닌 주제에 '방문 전' 같은 표현을 쓰지 마세요.
 - 출처 표기도 최소화하세요. "공식 홈페이지 기준으로 정리했어요"는 도입부에 한 번이면 충분해요. 모든 문장에 "공식 페이지에 안내돼 있어요", "~로 표시돼 있어요"를 붙이지 마세요.
 - 소제목은 조사 항목이 아니라 독자가 궁금한 것으로 쓰세요.
   - 좋은 예: '언제 가면 좋을까', '꼭 봐야 할 공연', '주차와 교통', '아이와 간다면'
@@ -1581,8 +1581,8 @@ AI 요약은 문단 전체가 아니라 '그 자체로 완결된 한두 문장'�
 - HOME_FEED는 목차를 기본적으로 넣지 마세요. 글이 길거나 정보 구조가 복잡해 실제로 도움이 될 때만 3~5개의 짧은 목차를 넣을 수 있습니다.
 - 주요 H2는 "## 1. ...", H3는 필요할 때만 "### 1-1. ..." 형식으로 번호를 붙이세요.
 - H2 제목은 12~20자를 목표로, 최대 24자입니다. 한 H2에 한 핵심만 담고, 콜론(:) 나열·연도·과한 수식어는 본문으로 보내세요. 예: '환급금 대상 확인', '환급액과 지급일', '신청 방법'.
-- 마지막 H2 제목에는 '정리' 또는 '마무리'를 넣으세요. 예: '## 5. 한 번에 정리'. 앱이 FAQ를 이 H2 바로 앞에 자동으로 넣습니다.
-- body_markdown 안에 FAQ 섹션을 따로 쓰지 마세요. FAQ는 faq 필드에만 3~8개 작성합니다. 본문에서 답하지 못한 독자 질문이 많으면 그만큼 늘리세요.
+{"- 마지막 H2 제목에는 '정리' 또는 '마무리'를 넣으세요. 예: '## 5. 한 번에 정리'. 앞의 핵심 요약을 그대로 반복하지 말고, 독자가 바로 할 행동 2~3가지로 짧게 정리하세요. 앱이 FAQ를 이 H2 바로 앞에 자동으로 넣습니다." if writing_options.get("include_summary", True) else "- 마지막에 '정리·마무리' 같은 별도 H2를 만들지 마세요. 마지막 H2 섹션이 끝난 뒤 소제목 없이 2~4문장의 짧은 마무리 문단으로 끝내세요. 핵심 요약을 반복하지 마세요."}
+{"- body_markdown 안에 FAQ 섹션을 따로 쓰지 마세요. FAQ는 faq 필드에만 3~6개 작성합니다. 본문에서 답하지 못한 독자 질문 중 제목·주제와 직접 관련된 것만 넣고, 주제와 동떨어진 질문(예: 체험단 글에 공무원 겸직 규정)은 넣지 마세요. 본문 내용을 그대로 반복하는 FAQ도 만들지 마세요." if writing_options.get("include_faq", True) else "- FAQ를 만들지 마세요. faq 필드는 빈 배열로 두고, body_markdown에도 FAQ 섹션을 쓰지 마세요. 독자 질문은 본문 H2 안에서 답하세요."}
 - 모바일 화면 기준으로 1~3문장마다 문단을 나누세요.
 
 [여행 정보·추천 콘텐츠 규칙 — is_travel_content가 true일 때]
@@ -1627,6 +1627,10 @@ AI 요약은 문단 전체가 아니라 '그 자체로 완결된 한두 문장'�
 - 참고/벤치마크 글이나 다른 블로그에 나온 경험·성과·노하우를 사용자의 경험처럼 쓰지 마세요. 필요하면 "다른 후기를 보면 ~라는 이야기도 있어요"처럼 남의 이야기임을 분명히 하세요.
 - 경험에 없는 성공 노하우를 사용자가 직접 해본 것처럼 쓰지 마세요. 일반적으로 알려진 팁은 "일반적으로 알려진 방법"으로 구분해 쓰세요.
 - 실패·아쉬움이 포함된 경험은 숨기지 말고 솔직하게 살리세요. 독자는 성공담보다 실수에서 더 많이 배웁니다.
+- 1인칭 문장("저는", "제가", "저도")은 경험 내용에 적힌 사실만 쓰세요. 경험에 없는 행동(예: "사진을 여러 각도에서 찍었어요"), 해석(예: "카테고리가 영향이 있는 듯해요"), 감정·상황 묘사(예: 없던 상품이 소진됐다는 묘사)를 덧붙이지 마세요.
+- 경험 문장의 의미를 바꾸지 마세요. 예: "5만 원 이하 물품 당첨"은 지금까지 당첨된 물품의 가격대이지, 이번에 어쩔 수 없이 고른 상품이라는 뜻이 아닙니다. 애매하면 적힌 그대로 옮기세요.
+- 경험에 적힌 날짜·요일·시각과 조사 노트의 일반 정보(예: 초대 주기·요일)가 맞지 않으면, 경험을 사실로 보고 일반 정보는 쓰지 마세요.
+- 조사 노트에 출처 없이 나온 구체적 기준(예: 사진 10장 이상, 700자 이상)을 공식 규칙처럼 쓰지 마세요.
 
 [메인키워드 SEO 규칙]
 - SEO 메인 키워드는 반드시 `{main_keyword}`입니다. 다른 키워드로 바꾸지 마세요.
@@ -1810,7 +1814,8 @@ def seo_check(article, analysis):
     rq_ok = rq_total == 0 or rq_covered == rq_total
 
     faq_count = len(article.get("faq", []) or [])
-    faq_ok = faq_count >= (2 if mode == "HOME_FEED" else 3)
+    faq_expected = article.get("include_faq", True)
+    faq_ok = (not faq_expected) or faq_count >= (2 if mode == "HOME_FEED" else 3)
 
     tags = [str(t).strip().lstrip("#") for t in (article.get("tags", []) or []) if str(t).strip()]
     tags_ok = 5 <= len(tags) <= 30 and bool(keyword) and any(keyword.replace(" ", "") == t.replace(" ", "") for t in tags)
@@ -2149,7 +2154,7 @@ def fetch_naver_post(url):
 
 # 내 PC 실행 여부: 자동 입력 도구(playwright)가 설치돼 있으면 로컬 실행으로 봅니다.
 IS_LOCAL_RUN = playwright_available()
-APP_VERSION = "V3.9"
+APP_VERSION = "V4.0"
 ENV_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 ENV_KEY_MAP = {
     "gemini_key": "GEMINI_API_KEY",
@@ -2377,7 +2382,7 @@ length = {
 }.get(content_mode_request, "")
 
 if not provider_ready or not naver_id or not naver_secret:
-    st.title("🔎 네이버 콘텐츠 기회 분석기 V3.9 SEO/GEO")
+    st.title("🔎 네이버 콘텐츠 기회 분석기 V4.0 SEO/GEO")
     st.info("왼쪽 사이드바에서 사용할 AI 방식과 API Key, Naver Client ID / Secret을 입력하면 시작할 수 있어요.")
     st.markdown("""
 ### 이 버전에서 하는 일
@@ -3012,6 +3017,19 @@ if analysis:
     if st.session_state.get("direct_experience_enabled", False):
         st.caption("직접경험이 추천 제목과 본문에 반영됩니다. 경험 내용을 바꾸려면 위의 ‘글 작성 유형 선택’ 영역에서 수정해 주세요.")
 
+    _mode_now = st.session_state.get("selected_content_mode", "")
+    oc1, oc2 = st.columns(2)
+    with oc1:
+        include_faq = st.checkbox(
+            "FAQ 넣기", value=(_mode_now != "HOME_FEED"), key=f"include_faq_{_mode_now}",
+            help="검색 유입과 AI 브리핑 인용에 도움이 돼요. 후기·홈판 글에서는 빼도 돼요.",
+        )
+    with oc2:
+        include_summary = st.checkbox(
+            "마지막 '한 번에 정리' 소제목 넣기", value=(_mode_now == "SEARCH"), key=f"include_summary_{_mode_now}",
+            help="끄면 소제목 없이 짧은 마무리 문단으로 끝나요. 앞의 핵심 요약과 내용이 겹칠 때 끄는 걸 추천해요.",
+        )
+
     if not st.session_state.get("selected_title"):
         st.warning("먼저 글 작성에 사용할 추천 제목을 하나 선택해 주세요.")
     if st.button("✍️ 선택한 제목으로 글 작성", type="primary", use_container_width=True):
@@ -3040,7 +3058,9 @@ if analysis:
                      "selected_title_reason": st.session_state.get("selected_title_reason", ""),
                      "direct_experience_enabled": bool(st.session_state.get("direct_experience_enabled", False)),
                      "direct_experience_text": st.session_state.get("direct_experience_text", "").strip() if st.session_state.get("direct_experience_enabled", False) else "",
-                     "user_supplied_facts": st.session_state.get("user_supplied_facts", "").strip()},
+                     "user_supplied_facts": st.session_state.get("user_supplied_facts", "").strip(),
+                     "include_faq": include_faq,
+                     "include_summary": include_summary},
                 )
                 # 사용자가 선택한 제목과 분석에서 확정한 메인키워드를 실제 발행 데이터에 고정합니다.
                 if selected_title:
@@ -3050,6 +3070,9 @@ if analysis:
                 article["content_mode"] = st.session_state.get("selected_content_mode")
 
                 article["character_count"] = len(re.sub(r"\s", "", article.get("body_markdown", "")))
+                article["include_faq"] = include_faq
+                if not include_faq:
+                    article["faq"] = []
                 article["target_length_rule"] = {
                     "HOME_FEED": "공백 제외 1500~2000자",
                     "SEARCH": "공백 제외 3000자 이상",
