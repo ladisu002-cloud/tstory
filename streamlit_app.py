@@ -531,6 +531,76 @@ def parse_naver_blog_structure(raw, url="", title=""):
     }
 
 
+def _page_title_from_raw(raw):
+    """og:title 또는 <title>에서 글 제목을 꺼냅니다."""
+    m = re.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)["\']', raw or "", flags=re.I)
+    if not m:
+        m = re.search(r"<title[^>]*>([\s\S]*?)</title>", raw or "", flags=re.I)
+    title = html_unescape(clean_html(m.group(1))).strip() if m else ""
+    return re.sub(r"\s*:\s*네이버\s*블로그\s*$", "", title).strip()
+
+
+BENCHMARK_KIND_LABELS = {
+    "HOME_FEED_EXPOSED": "홈판 노출 글",
+    "SEARCH_TOP": "검색 상위 글",
+    "REFERENCE": "참고 글",
+}
+
+
+def fetch_benchmark_blogs(urls_text, kind="REFERENCE", limit=3):
+    """벤치마크 블로그 URL(최대 3개)을 읽어 제목·소제목·분량·이미지 등 구조를 추출합니다.
+    네이버 블로그는 PC 주소가 본문을 프레임 안에 따로 두기 때문에 모바일 주소로 바꿔 읽습니다.
+    여기서 읽은 내용은 구조·각도 참고용이며 사실 근거로 쓰지 않습니다.
+    """
+    urls = []
+    for line in re.split(r"[\n,]+", urls_text or ""):
+        u = line.strip()
+        if u.startswith(("http://", "https://")) and u not in urls:
+            urls.append(u)
+    out = []
+    for url in urls[:limit]:
+        is_naver = "blog.naver.com" in url
+        fetch_url = _naver_blog_mobile_url(url) if is_naver else url
+        try:
+            raw = _http_get_text(fetch_url, timeout=15)
+        except Exception as e:
+            out.append({"status": "failed", "url": url, "kind": kind, "error": str(e)})
+            continue
+        if not raw:
+            out.append({"status": "failed", "url": url, "kind": kind, "error": "페이지를 불러오지 못했습니다."})
+            continue
+        title = _page_title_from_raw(raw)
+        info = parse_naver_blog_structure(raw, url=url, title=title)
+        if not info.get("headings"):
+            # 스마트에디터가 아닌 페이지는 h2/h3를 소제목으로 사용합니다.
+            hs = re.findall(r"<h[23][^>]*>([\s\S]*?)</h[23]>", raw, flags=re.I)
+            info["headings"] = [re.sub(r"\s+", " ", clean_html(h)).strip()[:60] for h in hs if clean_html(h).strip()][:15]
+        info.update({
+            "status": "ok" if info.get("char_count", 0) >= 300 else "weak",
+            "kind": kind,
+            "kind_label": BENCHMARK_KIND_LABELS.get(kind, "참고 글"),
+            "text_excerpt": (info.get("text_excerpt") or "")[:2500],
+        })
+        out.append(info)
+    return out
+
+
+def compact_benchmark_blogs_for_prompt(items):
+    out = []
+    for b in items or []:
+        if b.get("status") == "failed":
+            continue
+        out.append({
+            "kind": b.get("kind"), "kind_label": b.get("kind_label"), "title": b.get("title", ""),
+            "char_count": b.get("char_count", 0), "headings": b.get("headings", [])[:12],
+            "quotes_used_as_headings": b.get("quotes_used_as_headings", [])[:6],
+            "image_count": b.get("image_count", 0), "table_count": b.get("table_count", 0),
+            "has_faq": b.get("has_faq", False), "intro": b.get("intro", ""),
+            "text_excerpt": _compact_text(b.get("text_excerpt", ""), 1800),
+        })
+    return out
+
+
 def build_top_blog_structures(blog_items, cache, limit=5):
     out = []
     for item in (blog_items or [])[:limit]:
@@ -548,7 +618,7 @@ def compact_analysis_input(payload):
     """AI 분석 프롬프트에 넣을 입력을 줄입니다.
     프롬프트에 따로 넣는 항목은 제외하고, 페이지 원문은 페이지당 3,000자로 자릅니다.
     """
-    skip = {"extra_search_terms", "additional_search_data", "benchmark", "searchad_keyword_data"}
+    skip = {"extra_search_terms", "additional_search_data", "benchmark", "benchmark_blogs", "searchad_keyword_data"}
     out = {}
     for k, v in (payload or {}).items():
         if k in skip:
@@ -689,7 +759,19 @@ ANALYSIS_SCHEMA = {
         "recommended_new_keywords": {"type": "ARRAY", "items": {"type": "STRING"}},
         "cannibalization_note": {"type": "STRING"},
         "recommended_source_post": {"type": "STRING"},
-        "travel_checkpoints": {"type": "ARRAY", "items": {"type": "STRING"}}
+        "travel_checkpoints": {"type": "ARRAY", "items": {"type": "STRING"}},
+        "benchmark_insights": {
+            "type": "OBJECT",
+            "properties": {
+                "provided": {"type": "BOOLEAN"},
+                "title_hooks": {"type": "ARRAY", "items": {"type": "STRING"}},
+                "intro_style": {"type": "STRING"},
+                "structure": {"type": "STRING"},
+                "weaknesses": {"type": "ARRAY", "items": {"type": "STRING"}},
+                "differentiation": {"type": "ARRAY", "items": {"type": "STRING"}}
+            },
+            "required": ["provided", "title_hooks", "intro_style", "structure", "weaknesses", "differentiation"]
+        }
     },
     "required": [
         "search_intent", "main_keyword", "main_keyword_source", "main_keyword_evidence",
@@ -702,7 +784,8 @@ ANALYSIS_SCHEMA = {
         "existing_content_relevance", "existing_content_strengths",
         "existing_content_missing_or_extendable", "current_time_extension_points",
         "new_content_opportunities", "recommended_new_keywords",
-        "cannibalization_note", "recommended_source_post", "travel_checkpoints"
+        "cannibalization_note", "recommended_source_post", "travel_checkpoints",
+        "benchmark_insights"
     ],
 }
 
@@ -1107,7 +1190,9 @@ def analyze_with_ai(client, payload):
 - 홈판형 제목 3개를 만들 때 가능하면 서로 다른 구조를 사용하세요: 인용형 / 수식어형(나이·직업·수치·과거 이력) / 대비서사형(~더니·~는데·~지만) / 내 일 연결형 / 궁금증형.
 - 홈판 제목은 물음표보다 말줄임표나 감정이 담긴 서술로 여운을 남기는 쪽을 우선하고, 정보형 명사(방법·정리·한눈에)로 끝내지 마세요.
 - 혼합형은 메인키워드를 앞에 두되, 뒷부분은 홈판형처럼 후킹과 여운으로 마무리하세요.
-- 홈판은 검색이 아니라 추천이므로 메인키워드를 제목 맨 앞에 둘 필요가 없어요. 앞부분에는 클릭 이유를 두고, 메인키워드는 제목 안에 자연스럽게 포함하세요.
+- 공식 페이지의 일정·조건뿐 아니라 뉴스·웹 검색 결과에서 제목 후킹이 될 화제성 사실(과거에 화제가 된 일, 처음·최초, 기념 회차, 굿즈·협업 같은 파생 반응, 혜택)을 찾아 근거 URL과 함께 current_source_facts에 넣고, use 필드에 '제목 후킹 후보'라고 적으세요. 근거가 확인된 것만 넣습니다.
+- current_source_facts의 날짜는 그 날짜가 무엇의 일정인지(예: 이벤트 마감일, 경품 당첨자 발표일, 결과 발표일) 정확히 구분해서 적으세요.
+- 홈판은 검색이 아니라 추천이므로 메인키워드를 정확히 넣을 필요가 없어요. 앞부분에는 클릭 이유를 두고, 주제를 알아볼 수 있는 주제어(메인키워드·변형·정식 명칭·줄임말 중 하나)만 제목 안에 넣으세요. 변화 예고형('(작은 행동) 하나로 (대상)이 바뀐다')도 활용할 수 있어요.
 
 참고/벤치마크 URL 분석 원칙:
 - benchmark가 입력되면 URL의 종류가 블로그인지 공식 페이지인지 뉴스인지 일반 웹페이지인지 먼저 구분하세요.
@@ -1202,8 +1287,19 @@ def analyze_with_ai(client, payload):
 [추가 검색 표현별 네이버 검색 데이터]
 {json.dumps(payload.get("additional_search_data", []), ensure_ascii=False)}
 
-[참고/벤치마크 URL]
+[공식·정보 출처 URL]
 {json.dumps(compact_benchmark_for_prompt(payload.get("benchmark", {})), ensure_ascii=False)}
+
+[벤치마크 블로그 — 구조·각도 참고 전용]
+{json.dumps(compact_benchmark_blogs_for_prompt(payload.get("benchmark_blogs", [])), ensure_ascii=False)}
+
+벤치마크 블로그 분석 규칙:
+- 벤치마크 블로그는 사용자가 직접 고른 참고 글입니다. 사실의 근거로 쓰지 말고, 제목 방식·도입부·구성·분량·이미지 배치·빠진 정보를 분석하는 용도로만 쓰세요. 벤치마크에만 있는 날짜·가격·경품·수치는 다른 근거로 확인되지 않으면 current_source_facts에 넣지 마세요.
+- kind가 HOME_FEED_EXPOSED(홈판 노출 글)이면 제목의 후킹 구조와 첫 3~5문장의 도입 방식을 중점 분석하세요. SEARCH_TOP(검색 상위 글)이면 소제목 순서·정보 구성·분량·표/FAQ 사용을 중점 분석하세요.
+- benchmark_insights.title_hooks에는 제목을 그대로 옮기지 말고 '어떤 구조와 장치를 썼는지'로 요약하세요. (예: '작은 행동→큰 변화 예고형 서술, 키워드 없이 대상만 암시')
+- benchmark_insights.weaknesses에는 벤치마크가 약속하고 회수하지 못한 정보, 추측으로 채운 부분, 빠진 핵심 정보를 적고, differentiation에는 우리 글이 다르게 가져갈 각도를 적으세요.
+- 벤치마크 글 작성자의 경험·후기는 사용자의 경험이 아닙니다. 우리 글의 경험이나 사실로 가져오지 마세요.
+- 벤치마크 블로그가 비어 있으면 provided를 false로 두고 나머지는 빈 문자열·빈 배열로 두세요.
 
 [네이버 검색광고 키워드 도구 데이터]
 {json.dumps(payload.get("searchad_keyword_data", []), ensure_ascii=False)}
@@ -1262,28 +1358,39 @@ def generate_titles_for_mode(client, analysis_payload, mode, direct_experience_e
 - 검색형: 검색 의도와 핵심 키워드가 명확해야 하며, 공백 포함 약 28~38자를 목표로 하세요. 너무 짧아 정보 가치가 사라지지 않도록 메인키워드 + 검색 의도 + 클릭 보조 요소 1개 정도를 조합하세요.
 - 홈판형: 아래 [홈판형 제목 규칙]을 따르세요. 검색형 제목을 짧게 줄인 형태가 아니라, 추천 피드에서 스크롤을 멈추게 하는 제목입니다.
 - 혼합형: 아래 [혼합형 제목 규칙]을 따르세요. 검색에 걸리는 앞부분(메인키워드)과 홈판에서 클릭하게 만드는 뒷부분(후킹·여운)을 한 제목에 함께 담는 유형입니다. 정보만 이어 붙인 제목은 검색형이지 혼합형이 아닙니다.
-- **절대 규칙: 추천 제목 3개 모두에 [메인키워드]를 정확히 그대로 포함하세요.** (위치는 유형별 규칙을 따르세요. 홈판형은 맨 앞이 아니어도 됩니다.) 입력 키워드/메인키워드를 다른 표현으로 바꾸거나 삭제하지 마세요.
-- 제목 생성 전에 메인키워드를 먼저 확정된 문자열로 인식하고, 제목 생성 과정에서 키워드 자체를 새로 선택하지 마세요.
-- 추가 검색 표현은 제목에 반드시 모두 넣지 마세요. 제목의 핵심은 SEO 메인키워드이며, 추가 검색 표현은 제목 약속과 자연스럽게 맞을 때 최대 1개만 보조적으로 사용할 수 있습니다.
+- **절대 규칙(검색형·혼합형): 추천 제목 3개 모두에 [메인키워드]를 정확히 그대로 포함하세요.** 입력 키워드/메인키워드를 다른 표현으로 바꾸거나 삭제하지 마세요.
+- **홈판형은 예외입니다.** 홈판은 검색어 일치가 아니라 추천 피드에서 눈길을 끄는 제목이 클릭됩니다. 메인키워드를 정확히 넣지 않아도 되고, 대신 아래 [홈판형 주제어 규칙]을 따르세요.
+- 제목 생성 전에 메인키워드를 먼저 확정된 문자열로 인식하고, 제목 생성 과정에서 키워드 자체를 새로 선택하지 마세요. (홈판형에서 주제어를 변형하더라도 본문·태그의 메인키워드는 바뀌지 않습니다.)
+- 검색형·혼합형에서 추가 검색 표현은 제목에 반드시 모두 넣지 마세요. 제목의 핵심은 SEO 메인키워드이며, 추가 검색 표현은 제목 약속과 자연스럽게 맞을 때 최대 1개만 보조적으로 사용할 수 있습니다.
 - 모든 유형에서 제목은 한 번에 읽히되, 지나치게 짧게 압축하지 마세요. 한 제목에 검색의도·조회·신청·지급·주의사항 등 여러 정보를 모두 나열하지 말고, 독자가 클릭할 핵심 이유 하나를 남기세요.
 - 제목에 콜론(:), 슬래시(/), 세로선(|)으로 정보를 여러 개 나열하지 마세요. 쉼표는 정보 나열에 쓰지 말고, 앞뒤 흐름을 꺾는 연결(예: '~공개됐는데, ~')에만 쓰세요. 특히 'A 및 B: C부터 D까지' 같은 긴 나열형 제목을 만들지 마세요.
 - '방법', '조회', '대상', '지급일', '정리', '한눈에' 같은 정보형 검색어는 검색형 제목에서만 핵심 의도에 필요한 것 1~2개를 쓰세요. 혼합형·홈판형 제목은 이런 정보형 명사로 끝내지 마세요.
 - 같은 단어와 핵심 키워드의 불필요한 반복을 피하세요.
 - 확인되지 않은 최신 날짜, 할인율, 코드, 가격, 이벤트는 제목에 넣지 마세요.
 - 제목에서 약속한 내용은 실제 본문으로 작성할 수 있어야 합니다.
+- 대비서사형(~줄 알았는데, ~더니, ~는데)은 앞과 뒤가 모두 분석 데이터에서 확인된 사실이어야 합니다. 독자가 착각하고 있다는 근거가 없는 '가상의 오해'를 만들어 대비시키지 마세요. 예: 경품 당첨자 발표일을 최종 결과 발표일로 오해한다는 식의 설정 금지.
+- 날짜의 의미(무엇의 발표일·마감일인지)는 분석 데이터에 적힌 그대로만 쓰세요. 확인되지 않은 일정(최종 결과 발표일 등)을 제목의 후킹으로 삼지 마세요.
+- 후킹 소재는 분석 데이터에서 가장 강한 것을 우선 고르세요. 우선순위: ① 화제성(과거에 화제가 된 일, 처음·최초, 기념 회차) ② 독자가 얻는 혜택(경품·지원금·할인) ③ 숫자·기록. 절차·개인정보 동의·서류·로그인 같은 행정 정보는 제목의 후킹으로 쓰지 말고 본문에서 다루세요.
 - 회차/신청 일정이 있는 키워드는 현재 회차 상태를 최우선으로 반영하세요. 과거 회차가 검색 결과에 더 많이 보여도 현재 상태와 맞지 않으면 제목에서 선택하지 마세요.
 - 정확히 3개를 반환하세요.
 
 [홈판형 제목 규칙 — 작성 유형이 홈판형일 때만 적용]
-- 홈판(홈피드)은 검색어와 제목을 맞춰보는 검색이 아니라, 관심사에 맞춰 글을 보여주는 추천입니다. 메인키워드는 제목 안에 정확히 포함하되 위치는 자유입니다. 대신 '누구(무엇) 이야기인지'가 앞 20자 안에 보여야 합니다.
+- 홈판(홈피드)은 검색어와 제목을 맞춰보는 검색이 아니라, 관심사에 맞춰 글을 보여주는 추천입니다. 독자는 떠 있는 글 중 제목에 눈길이 가는 글을 누릅니다. 제목의 1순위는 후킹입니다.
 - 모바일 피드에서는 제목 앞부분이 먼저 읽힙니다. 앞 15~20자만 보고도 스크롤을 멈추게 쓰세요.
-- 3개 중 최소 2개는 메인키워드로 시작하지 마세요.
+
+[홈판형 주제어 규칙]
+- 메인키워드를 정확히 그대로 넣을 필요는 없습니다. 대신 무슨 주제인지 알아볼 수 있는 '주제어'를 제목에 1개 넣으세요.
+- 주제어 후보: 메인키워드, 추가 검색 표현, 연관 키워드 중 같은 대상을 가리키는 표현, 또는 그 대상의 정식 명칭·줄임말(예: '수능특강'·'수특').
+- 띄어쓰기만 다른 변형은 홈판 제목에서 의미가 없습니다. 주제어는 독자층으로 고르세요. 넓은 독자(학부모·일반 성인)를 노리면 정식 명칭, 핵심 독자(수험생·마니아)를 노리면 그들이 실제로 쓰는 줄임말이 자연스럽습니다.
+- 연도·학년도·회차처럼 일반 독자에게 헷갈릴 수 있는 숫자는 후킹에 꼭 필요할 때만 넣으세요.
+- 주제어는 앞 20자 안에 두면 좋지만 맨 앞일 필요는 없습니다. 3개 중 최소 2개는 주제어로 시작하지 마세요.
 - 3개는 아래 구조 중 서로 다른 3가지를 쓰세요.
   A. 인용형: [분석 데이터에서 확인된 발언·상황 인용] + 대상 + 결과·감정
   B. 수식어형: [나이·직업·수치·과거 이력이 붙은 대상] + 상황 .. 반전·감정
   C. 대비서사형: [과거·상황]~더니 / ~는데 / ~지만 .. [현재·반전]
   D. 내 일 연결형: [생활·정책·행사 변화] + 독자 자신과 연결(~라면, ~면 우리는)
   E. 궁금증형: 답이 있다는 것만 알리고 답은 숨김
+  F. 변화 예고형: [작은 행동·원인] 하나로 [대상]이 바뀐다 (예 구조: '(행동) 하나로 (대상)이 바뀐다..')
 - 대상 앞에 나이·직업·수치·과거 이력 같은 수식어를 붙여 구체화하세요. 숫자를 1개 이상 넣되, 수식어와 숫자는 분석 데이터에서 확인된 사실만 씁니다.
 - 결말은 말줄임표(.. 또는 …)나 감정이 담긴 서술(~였다니, ~달랐다, ~까지)로 여운을 남기세요. 물음표로 끝나는 제목은 3개 중 1개 이하입니다.
 - 인물·경기·이슈 키워드라면 정보 나열보다 '사람 이야기'로 만드세요. 이 사람이 누구인지, 무엇이 대단한지, 왜 지금 화제인지 중 하나를 앞세우세요.
@@ -1293,6 +1400,7 @@ def generate_titles_for_mode(client, analysis_payload, mode, direct_experience_e
 - 피할 것: '프로필 총정리', '~정리', '~방법 알아보기', '한눈에' 같은 검색형 표현, 정보 나열, 콜론(:)·슬래시(/)·세로선(|), 이모지, '충격', '경악', '결국 터졌다' 같은 과장·낚시 표현, 물음표 2개 이상.
 - 구조 예시(사실은 반드시 분석 데이터에서 확인된 것만 사용):
   - 나쁜 예: "{{메인키워드}} 프로필 총정리" → 검색형 제목, 키워드 선두 + 정보 나열
+  - 나쁜 예: 주제어가 하나도 없어 무슨 이야기인지 알 수 없는 제목
   - 나쁜 예: "{{메인키워드}} 신기록 이유" → 키워드 선두, 궁금증이 약함
   - 좋은 예 구조(대비서사형): "(확인된 과거 사실)이었는데.. {{메인키워드}} 지금은 달라졌다"
   - 좋은 예 구조(수식어형): "(나이·직업 수식어) (대상), {{메인키워드}} 뒤 바뀐 한 가지"
@@ -1349,13 +1457,15 @@ SEO 메인키워드: {analysis_payload.get("main_keyword") or analysis_payload.g
 콘텐츠 GAP: {json.dumps(analysis_payload.get("content_gaps", []), ensure_ascii=False)}
 추가 검색 표현: {json.dumps(analysis_payload.get("extra_search_terms", []), ensure_ascii=False)}
 연관 키워드: {json.dumps(analysis_payload.get("related_keywords", []), ensure_ascii=False)}
+벤치마크 블로그 분석: {json.dumps(analysis_payload.get("benchmark_insights", {}), ensure_ascii=False)}
+- 벤치마크 분석이 있으면 title_hooks의 구조와 장치는 참고하되 같은 표현·같은 문장 구조는 피하고, differentiation 각도를 제목에 살리세요. 벤치마크 제목을 변형해 베끼지 마세요. 벤치마크는 메인키워드·사실·유형별 제목 규칙보다 우선할 수 없습니다.
 롱테일 키워드: {json.dumps(analysis_payload.get("long_tail_keywords", []), ensure_ascii=False)}
 검색광고 키워드 데이터: {json.dumps(analysis_payload.get("searchad_keyword_data", []), ensure_ascii=False)}
 현재 근거: {json.dumps(analysis_payload.get("current_source_facts", []), ensure_ascii=False)}
 
 [가장 추천하는 제목 고르기]
 - 3개 중 '{mode_label}' 작성 유형에서 노출 가능성이 가장 높다고 판단하는 제목 하나를 골라 best_index에 번호(1, 2, 3 중 하나)로 적으세요.
-- 판단 기준: 검색형은 검색량 있는 키워드·검색 의도 일치·정보 약속의 명확성, 홈판형은 클릭 이유의 강도·독자층의 넓이·본문에서 약속을 회수할 수 있는지, 혼합형은 메인키워드가 앞 15자 안에 있으면서 뒷부분에 클릭 이유(반전·혜택·여운)가 살아 있는지를 보세요. 정보만 나열한 제목은 혼합형 추천으로 고르지 마세요. 직접 경험이 제공됐다면 그 경험을 가장 잘 살리는 제목에 가산점을 주고, 경험에 없는 성과·노하우를 약속하는 제목은 추천하지 마세요.
+- 판단 기준: 검색형은 검색량 있는 키워드·검색 의도 일치·정보 약속의 명확성, 홈판형은 클릭 이유의 강도·독자층의 넓이·주제어로 무슨 이야기인지 알아볼 수 있는지·본문에서 약속을 회수할 수 있는지, 혼합형은 메인키워드가 앞 15자 안에 있으면서 뒷부분에 클릭 이유(반전·혜택·여운)가 살아 있는지를 보세요. 정보만 나열한 제목은 혼합형 추천으로 고르지 마세요. 모든 유형에서, 확인되지 않은 대비·일정·오해를 전제로 한 제목은 클릭성이 높아 보여도 추천하지 마세요. 직접 경험이 제공됐다면 그 경험을 가장 잘 살리는 제목에 가산점을 주고, 경험에 없는 성과·노하우를 약속하는 제목은 추천하지 마세요.
 - best_reason에는 다른 두 제목과 비교해 왜 이 제목이 가장 나은지 한두 문장으로 적으세요.
 
 JSON으로만 답하세요.
@@ -1364,12 +1474,28 @@ JSON으로만 답하세요.
     main_keyword = (analysis_payload.get("main_keyword") or analysis_payload.get("keyword") or "").strip()
     titles = (result.get("titles", []) or [])[:3]
     # 모델이 규칙을 어겨 메인키워드를 누락시키더라도 제목 단계에서 키워드가 사라지지 않도록 최종 방어선을 둡니다.
-    if main_keyword:
+    if main_keyword and mode != "HOME_FEED":
         for item in titles:
             title = str(item.get("title", "")).strip()
             if title and main_keyword not in title:
                 item["title"] = f"{main_keyword} {title}"
                 item["why"] = (str(item.get("why", "")).strip() + " 메인키워드를 제목에 고정했습니다.").strip()
+    elif mode == "HOME_FEED":
+        # 홈판형은 정확한 키워드 대신 주제어(변형 포함)만 확인하고, 제목을 강제로 바꾸지 않습니다.
+        topic_terms = [main_keyword, analysis_payload.get("keyword", "")]
+        topic_terms += list(analysis_payload.get("extra_search_terms", []) or [])
+        topic_terms += list(analysis_payload.get("related_keywords", []) or [])[:10]
+        topic_ns = [re.sub(r"\s", "", str(t)) for t in topic_terms if str(t).strip()]
+        for item in titles:
+            title_ns = re.sub(r"\s", "", str(item.get("title", "")))
+            hit = any(t and t in title_ns for t in topic_ns)
+            if not hit:
+                # 키워드 조각(2자 이상 명사) 중 하나라도 있으면 주제어가 있는 것으로 봅니다.
+                parts = {w for t in topic_terms for w in re.findall(r"[가-힣A-Za-z0-9]{2,}", str(t))}
+                hit = any(w in title_ns for w in parts if not w.isdigit())
+            item["topic_word_ok"] = hit
+            if not hit:
+                item["why"] = (str(item.get("why", "")).strip() + " ⚠️ 제목에 주제어가 없어 무슨 이야기인지 알아보기 어려울 수 있어요.").strip()
     # 가장 추천하는 제목 표시(1부터 시작하는 번호). 범위를 벗어나면 첫 번째를 추천으로 둡니다.
     try:
         best = int(result.get("best_index", 1)) - 1
@@ -1468,6 +1594,7 @@ def build_writing_context(analysis_payload):
         "long_tail_keywords": compact_list(a.get("long_tail_keywords"), 160, 20),
         "extra_search_terms": compact_list(a.get("extra_search_terms"), 160, 12),
         "title_patterns": compact_list(a.get("title_patterns"), 220, 8),
+        "benchmark_insights": a.get("benchmark_insights") or {},
         "reader_questions": compact_list(a.get("reader_questions"), 200, 10),
         "missing_info": compact_list(a.get("missing_info"), 300, 10),
         "current_status": a.get("current_status", {}) or {},
@@ -1499,6 +1626,37 @@ def _korean_date(iso_value):
     except Exception:
         d = date.today()
         return f"{d.year}년 {d.month}월 {d.day}일"
+
+
+_QUESTION_ENDING = re.compile(r"(?:일까|될까|할까|을까|ㄹ까|까요|나요|가요|는가|인가|을까요|할까요|일까요|될까요|있을까|없을까|있나요|없나요|뭘까|어디일까|언제일까|얼마일까|누구일까|왜일까)$")
+
+
+def normalize_question_headings(body):
+    """질문 어미로 끝나는데 물음표가 빠진 H2·H3·목차 항목에 물음표를 붙입니다."""
+    if not body:
+        return body
+    out = []
+    in_toc = False
+    for line in body.split("\n"):
+        t = line.rstrip()
+        stripped = t.strip()
+        if re.match(r"^#{1,3}\s*목차\s*$", stripped):
+            in_toc = True
+            out.append(line)
+            continue
+        is_heading = bool(re.match(r"^#{2,3}\s+", stripped))
+        is_toc_item = in_toc and bool(re.match(r"^\d+\.\s+", stripped))
+        if in_toc and stripped.startswith("#") and not is_heading:
+            in_toc = False
+        if is_heading and in_toc:
+            in_toc = False
+        if (is_heading or is_toc_item) and not stripped.endswith(("?", "?")):
+            core = re.sub(r"[\s.…~!]+$", "", stripped)
+            if _QUESTION_ENDING.search(core):
+                t = t[:len(t) - (len(stripped) - len(core))] if stripped != core else t
+                t = t.rstrip() + "?"
+        out.append(t)
+    return "\n".join(out)
 
 
 def detect_body_truncation(body, min_chars=0):
@@ -1623,9 +1781,15 @@ AI 요약은 문단 전체가 아니라 '그 자체로 완결된 한두 문장'�
 - 중반에는 비교·실수하기 쉬운 부분·의외의 포인트·체크리스트처럼 저장 가치가 있는 정보를 두세요.
 - 후반에는 독자가 기억할 핵심 2~4개를 정리하고, 필요하면 '그래서 이렇게 하면 돼요' 식의 짧은 행동 가이드를 주세요.
 - 하나의 핵심 스토리/각도를 끝까지 유지하되, 독자 질문 중 본문에 담지 못한 것은 FAQ로 답하세요. 인용구는 실제로 강한 한 문장이 있을 때만 쓰세요.
+- 첫 문장은 핵심 독자 밖의 넓은 독자도 공감할 수 있는 공통 경험·기억으로 시작하면 좋습니다. (예 구조: 그 이름만 들어도 떠오르는 기억, 누구나 한 번쯤 겪은 상황)
+- 핵심 독자 주변의 독자(학부모·가족·직장인 등)가 자기 일로 느낄 수 있는 문장을 본문에 1회 이상 넣으세요. 단, 근거가 있는 내용만 씁니다.
+- 단순 소식에는 '왜 이번이 다른지' 의미를 붙이세요. 의미는 분석 데이터에서 확인된 사실(처음 적용, 기념 회차, 변화 등)에서만 찾습니다.
+- 결과 발표·발간·다음 회차처럼 후속 소식이 이어지는 주제라면 마지막 문장 뒤에 이웃추가를 권하는 짧은 한 문장을 넣으세요.
+- 제목·소제목이 약속한 날짜·혜택·결과는 본문에서 확인된 사실로 반드시 회수하세요. 확인된 사실이 있는데 '~가능성이 높다', '~경향이 있다', '보통 ~' 같은 추측으로 대신하지 마세요. 관련 없는 단어(예: 투표 글에 '지원금')로 소제목을 낚지 마세요.
 
 [혼합형(HYBRID) 작성 규칙]
 - 서론은 홈판형처럼 공감과 궁금증으로 시작하고, 본문 구조는 검색형처럼 H2별 질문-답변으로 구성하세요.
+- 제목·소제목이 약속한 날짜·혜택·결과는 확인된 사실로 반드시 회수하고, 확인된 사실을 추측 표현으로 대신하지 마세요.
 
 [본문 구조·서식]
 - body_markdown에는 글 제목을 반복하지 마세요. 시작은 2~4개의 서론 문단입니다.
@@ -1633,6 +1797,8 @@ AI 요약은 문단 전체가 아니라 '그 자체로 완결된 한두 문장'�
 - HOME_FEED는 목차를 기본적으로 넣지 마세요. 글이 길거나 정보 구조가 복잡해 실제로 도움이 될 때만 3~5개의 짧은 목차를 넣을 수 있습니다.
 - 주요 H2는 "## 1. ...", H3는 필요할 때만 "### 1-1. ..." 형식으로 번호를 붙이세요.
 - H2 제목은 12~20자를 목표로, 최대 24자입니다. 한 H2에 한 핵심만 담고, 콜론(:) 나열·연도·과한 수식어는 본문으로 보내세요. 예: '환급금 대상 확인', '환급액과 지급일', '신청 방법'.
+- H2 형식 통일(필수): SEARCH/HYBRID는 한 글 안의 H2를 '질문형' 또는 '명사형' 중 하나로 통일하세요. 질문형은 독자가 실제로 묻는 질문에서 가져오고 반드시 물음표로 끝냅니다(예: '투표는 언제까지 할까요?'). 명사형은 핵심어로 끝냅니다(예: '투표 기간과 마감일'). '~일까', '~될까', '~할까', '~나요'처럼 질문 어미로 끝나면서 물음표가 없는 소제목은 금지입니다.
+- HOME_FEED의 H2는 문장형도 쓸 수 있습니다. 질문이면 물음표를 붙이고, 서술이면 마침표 없이 끝냅니다.
 {"- 마지막 H2 제목에는 '정리' 또는 '마무리'를 넣으세요. 예: '## 5. 한 번에 정리'. 앞의 핵심 요약을 그대로 반복하지 말고, 독자가 바로 할 행동 2~3가지로 짧게 정리하세요. 앱이 FAQ를 이 H2 바로 앞에 자동으로 넣습니다." if writing_options.get("include_summary", True) else "- 마지막에 '정리·마무리' 같은 별도 H2를 만들지 마세요. 마지막 H2 섹션이 끝난 뒤 소제목 없이 2~4문장의 짧은 마무리 문단으로 끝내세요. 핵심 요약을 반복하지 마세요."}
 {"- body_markdown 안에 FAQ 섹션을 따로 쓰지 마세요. FAQ는 faq 필드에만 3~6개 작성합니다. 본문에서 답하지 못한 독자 질문 중 제목·주제와 직접 관련된 것만 넣고, 주제와 동떨어진 질문(예: 체험단 글에 공무원 겸직 규정)은 넣지 마세요. 본문 내용을 그대로 반복하는 FAQ도 만들지 마세요." if writing_options.get("include_faq", True) else "- FAQ를 만들지 마세요. faq 필드는 빈 배열로 두고, body_markdown에도 FAQ 섹션을 쓰지 마세요. 독자 질문은 본문 H2 안에서 답하세요."}
 - 모바일 화면 기준으로 1~3문장마다 문단을 나누세요.
@@ -1661,6 +1827,7 @@ AI 요약은 문단 전체가 아니라 '그 자체로 완결된 한두 문장'�
 3) 공식 페이지의 최신 상태가 널리 알려진 내용과 다르면 최신 확인 내용을 우선하세요.
 4) current_status가 ACTIVE면 현재 회차, UPCOMING이면 다음 회차를 기준으로 쓰고, 끝난 회차를 현재처럼 쓰지 마세요.
 5) 참고/벤치마크 URL은 구조·정보 보강용입니다. 문장을 복사하지 말고, 사실은 공식 근거와 교차 확인된 것만 확정하세요. 단, benchmark.source_type이 OFFICIAL_REFERENCE이거나 user_official_pages에 있는 내용은 공식 사실로 사용하세요.
+5-1) benchmark_insights(벤치마크 블로그 분석)는 도입 방식·구성·차별화 각도의 참고자료입니다. 메인키워드, 공식 사실, 작성 유형별 규칙, 분량·서식 규칙보다 우선할 수 없습니다. weaknesses에 적힌 빈틈은 확인된 정보로 채우고, differentiation 각도를 살리되 벤치마크의 문장·표현·경험은 가져오지 마세요.
 7) current_status.type이 EVENT면 행사 기간 기준으로 '개최 예정/진행 중/종료'를 정확히 표현하세요.
 6) 애드센스 유도용 외부 링크는 쓰지 마세요. 쿠팡파트너스는 제품 구매 의도가 있을 때만 1개 슬롯을 제안하고, URL은 만들지 마세요.
 
@@ -1739,6 +1906,12 @@ def seo_check(article, analysis):
     keyword = (article.get("main_keyword") or analysis.get("main_keyword") or analysis.get("keyword", "")).strip()
     selected_title = (article.get("seo_title") or article.get("home_title") or "").strip()
     title_keyword_ok = bool(keyword and keyword in selected_title)
+    if (article.get("content_mode") or "") == "HOME_FEED" and not title_keyword_ok and keyword:
+        # 홈판형은 정확한 키워드 대신 주제어(키워드 조각·변형)가 있으면 통과로 봅니다.
+        _t = re.sub(r"\s", "", selected_title)
+        _terms = [keyword] + list(analysis.get("extra_search_terms", []) or [])
+        _parts = {w for t in _terms for w in re.findall(r"[가-힣A-Za-z0-9]{2,}", str(t)) if not w.isdigit()}
+        title_keyword_ok = any(re.sub(r"\s", "", str(t)) in _t for t in _terms if str(t).strip()) or any(w in _t for w in _parts)
     title_words = [w for w in re.findall(r"[가-힣A-Za-z0-9]{2,}", selected_title) if len(w) >= 2]
     title_overlap = sum(1 for w in title_words if w in text)
 
@@ -1878,7 +2051,7 @@ def seo_check(article, analysis):
     tags_ok = 5 <= len(tags) <= 30 and bool(keyword) and any(keyword.replace(" ", "") == t.replace(" ", "") for t in tags)
 
     checks = {
-        "제목 메인키워드 포함": title_keyword_ok,
+        ("제목 주제어 포함(홈판)" if mode == "HOME_FEED" else "제목 메인키워드 포함"): title_keyword_ok,
         "제목 약속 본문 반영": title_overlap >= max(1, min(3, len(title_words))),
         "도입부 메인키워드 반영": intro_keyword_ok,
         ("최신 시점 표기" if mode != "HOME_FEED" else "최신 시점 표기(홈판 생략)"): date_ok,
@@ -2059,7 +2232,8 @@ def fetch_benchmark(url, force_official=False):
     if not url:
         return {"status": "not_provided"}
     try:
-        raw = _http_get_text(url, timeout=15)
+        fetch_url = _naver_blog_mobile_url(url) if "blog.naver.com" in url else url
+        raw = _http_get_text(fetch_url, timeout=15)
         if not raw:
             return {"status": "failed", "url": url, "error": "페이지를 불러오지 못했습니다."}
         raw = re.sub(r"<script[\s\S]*?</script>", " ", raw, flags=re.I)
@@ -2516,15 +2690,28 @@ with st.expander("선택 옵션", expanded=False):
         height=90,
     )
     benchmark_url = st.text_input(
-        "참고/벤치마크 URL(선택)",
-        placeholder="참고할 블로그·공식 홈페이지·뉴스·안내 페이지 URL",
-        help="블로그뿐 아니라 공식 홈페이지, 공공기관, 뉴스, 안내 페이지도 입력할 수 있습니다. 같은 사이트의 일정·프로그램·교통·주차 안내 페이지까지 함께 확인합니다.",
+        "공식·정보 출처 URL(선택)",
+        placeholder="공식 홈페이지·공공기관·안내 페이지·기사 URL",
+        help="사실 확인용 페이지를 넣는 칸이에요. 지원금·축제·행사는 공식 홈페이지를 넣고 아래 체크박스를 체크하세요. 같은 사이트의 일정·프로그램·교통·주차 안내 페이지까지 함께 확인합니다. 기사는 체크하지 않는 게 안전해요.",
     )
     benchmark_is_official = st.checkbox(
         "이 URL은 공식 홈페이지예요 (내용을 공식 사실로 사용)",
         value=False,
         disabled=not benchmark_url.strip(),
         help="축제·행사 공식 사이트처럼 .kr/.com 주소라 자동으로 공식 판별이 안 되는 경우 체크하세요. go.kr·or.kr 등 공공 도메인은 자동으로 공식 처리됩니다.",
+    )
+    benchmark_blogs_raw = st.text_area(
+        "벤치마크 블로그 URL(선택, 최대 3개)",
+        placeholder="참고할 블로그 글 주소를 한 줄에 하나씩 넣으세요.\n예: https://blog.naver.com/아이디/글번호",
+        help="제목 방식·도입부·구성·빠진 정보를 분석하는 참고용이에요. 이 글의 내용은 사실로 쓰지 않고, 문장이나 경험도 가져오지 않습니다. 여행·맛집·리뷰·이슈·스포츠 키워드에 특히 유용해요.",
+        height=90,
+    )
+    benchmark_blog_kind = st.radio(
+        "벤치마크 블로그 종류",
+        options=["HOME_FEED_EXPOSED", "SEARCH_TOP", "REFERENCE"],
+        format_func=lambda k: {"HOME_FEED_EXPOSED": "홈판에 노출된 글 (제목·도입부 중점)", "SEARCH_TOP": "검색 상위 글 (구성·정보 중점)", "REFERENCE": "그냥 참고 글"}[k],
+        horizontal=True,
+        disabled=not benchmark_blogs_raw.strip(),
     )
 
 analyze_clicked = st.button(
@@ -2625,6 +2812,17 @@ if analyze_clicked:
                     official_source_pages = merged
                 else:
                     source_pages = subpages + source_pages
+            benchmark_blogs = []
+            if benchmark_blogs_raw.strip():
+                st.write("⑤-1 벤치마크 블로그 읽기")
+                benchmark_blogs = fetch_benchmark_blogs(benchmark_blogs_raw, kind=benchmark_blog_kind, limit=3)
+                for b in benchmark_blogs:
+                    if b.get("status") == "failed":
+                        st.warning(f"벤치마크 블로그를 읽지 못했어요: {b.get('url','')} ({b.get('error','')})")
+                    elif b.get("status") == "weak":
+                        st.warning(f"벤치마크 블로그 본문이 거의 읽히지 않았어요({b.get('char_count',0)}자): {b.get('url','')}")
+                    else:
+                        st.caption(f"✓ 벤치마크 읽기 완료 · {b.get('title') or b.get('url')} · 본문 {b.get('char_count',0)}자 · 소제목 {len(b.get('headings',[]))}개 · 이미지 {b.get('image_count',0)}개")
             action_pages = []
             if action_limit > 0:
                 st.write("⑥ 신청·예약 링크 상태 확인")
@@ -2670,6 +2868,7 @@ if analyze_clicked:
             payload["action_pages"] = action_pages
             payload["kin_questions"] = compact_results((kin.get("items", []) or [])[:20], ["title", "description"])
             payload["top_blog_structures"] = top_blog_structures
+            payload["benchmark_blogs"] = benchmark_blogs
             payload["current_status"] = derive_current_status(
                 keyword, date.today(), source_pages=source_pages,
                 official_source_pages=official_source_pages, action_pages=action_pages, benchmark=benchmark
@@ -3128,6 +3327,7 @@ if analysis:
                     if (not retry_problem) or (len_b > len_a):
                         article, problem = retry, retry_problem
                 article["truncation_warning"] = problem
+                article["body_markdown"] = normalize_question_headings(article.get("body_markdown", ""))
                 # 사용자가 선택한 제목과 분석에서 확정한 메인키워드를 실제 발행 데이터에 고정합니다.
                 if selected_title:
                     article["seo_title"] = selected_title
