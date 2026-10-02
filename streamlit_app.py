@@ -1277,6 +1277,8 @@ def analyze_with_ai(client, payload):
 
 [실제 독자 질문과 상위 글 구조 활용]
 - kin_questions(지식iN)는 실제 사람들이 이 키워드로 묻는 질문입니다. 반복되거나 중요한 질문을 골라 reader_questions에 5~8개의 자연스러운 구어체 질문 문장으로 정리하세요. 데이터에 근거가 없는 질문을 지어내지 말고, kin_questions가 비어 있으면 블로그·웹문서·연관 키워드에서 확인되는 질문으로 대신하세요. 오타·띄어쓰기·명칭 차이를 묻는 질문(예: 'A와 B는 같은 축제인가요?')은 reader_questions에서 제외하세요. 질문은 독자가 가장 많이 궁금해할 순서로 정렬하세요.
+- reader_questions·recommended_outline·content_gaps에는 검색자가 실제로 찾는 핵심 질문만 넣으세요. 개인정보 이용 동의, 개인정보 보유·파기 기간, 당첨자 개별 공지 경로(SMS·앱 푸시·알림방), 약관 문구, 응모 화면 조작법 같은 행정·절차 정보는 질문이나 목차 항목으로 만들지 마세요. 단, 신청 서류·자격 조건·제출 기한처럼 놓치면 실제로 손해를 보는 절차는 핵심 정보로 취급합니다.
+- 경품·지원금·혜택은 '누구나 받는 것'인지 '추첨·선착순·심사'인지 current_source_facts에 구분해서 적으세요.
 - top_blog_structures는 현재 상위 노출 블로그 글의 실제 소제목·분량·표·이미지·FAQ 여부입니다. 상위 글들이 공통으로 다루는 주제(기본으로 갖춰야 할 정보)와 아무도 제대로 다루지 않은 주제를 구분해 content_gaps와 recommended_outline에 반영하세요.
 - 상위 글의 분량과 구성(표·FAQ 유무)을 근거로 competition과 opportunity를 구체적으로 적으세요.
 - is_time_sensitive_topic이 false이면 회차·신청기간 검증은 필요한 경우에만 하고, 검색의도 충족과 정보 차별화에 집중하세요.
@@ -1659,6 +1661,41 @@ def normalize_question_headings(body):
     return "\n".join(out)
 
 
+def _bigrams(text):
+    t = re.sub(r"[^가-힣A-Za-z0-9]", "", str(text or ""))
+    return {t[i:i + 2] for i in range(len(t) - 1)}
+
+
+def _coverage(a, b):
+    """a의 글자쌍 중 b에도 있는 비율. 한국어 조사·어미 차이에 덜 민감합니다."""
+    A, B = _bigrams(a), _bigrams(b)
+    return len(A & B) / max(1, len(A))
+
+
+def dedupe_faq_against_body(faq, body):
+    """본문에서 이미 답한 질문과 행정·절차 질문을 FAQ에서 뺍니다."""
+    if not faq:
+        return faq
+    lines = (body or "").split("\n")
+    headings = [re.sub(r"^#{2,3}\s*[\d.\-]*\s*", "", ln.strip()) for ln in lines if re.match(r"^#{2,3}\s+", ln.strip())]
+    sentences = [x for x in re.split(r"(?<=[.!?요])\s+", re.sub(r"\s+", " ", body or "")) if len(x) > 12]
+    admin = re.compile(r"개인\s*정보|약관|보유\s*기간|파기|개별\s*공지|앱\s*푸시|SMS|나의\s*소식|알림방")
+    kept = []
+    for item in faq:
+        q = item.get("question", "")
+        ans = (item.get("answer", "") or "").strip()
+        first = re.split(r"(?<=[.!?요])\s+", ans)[0] if ans else ""
+        if admin.search(q):
+            continue
+        # 소제목과 거의 같은 질문이거나, 답변 첫 문장이 본문 문장과 거의 같으면 중복으로 봅니다.
+        if any(_coverage(h, q) >= 0.6 for h in headings if h):
+            continue
+        if first and any(_coverage(first, sent) >= 0.55 for sent in sentences):
+            continue
+        kept.append(item)
+    return kept
+
+
 def detect_body_truncation(body, min_chars=0):
     """본문이 중간에 끊겼거나 목표보다 크게 짧은지 확인합니다. 문제 없으면 빈 문자열."""
     body = (body or "").strip()
@@ -1764,6 +1801,12 @@ AI 요약은 문단 전체가 아니라 '그 자체로 완결된 한두 문장'�
 - 올해 세부 정보가 조사 노트와 '사용자가 직접 확인한 정보'에 모두 없는 질문(missing_info 항목)은 확인된 범위(무엇이 있는지)만 쓰고, 세부는 "어디서 보면 되는지"를 한 문장으로 안내하세요. 이런 안내 문장은 글 전체에서 2번을 넘기지 말고, 가능하면 FAQ 한 곳에 모으세요. 예: "부스 위치는 공식 홈페이지 공지사항에서 축제 직전에 올라와요."
 - 명칭 차이·오타를 묻는 질문은 답하지 마세요.
 
+[행정·절차 정보와 반복 — 모든 유형 공통]
+- 개인정보 이용 동의, 개인정보 보유·파기 기간, 당첨자 개별 공지 경로(SMS·앱 푸시·알림방), 약관, 응모 화면 조작법은 독자가 찾는 정보가 아닙니다. 별도 H2나 FAQ로 만들지 말고, 꼭 필요한 것(예: 당첨 후 정보 입력 기한, 제세공과금처럼 모르면 손해인 것)만 관련 H2 안에 1~2문장으로 쓰세요.
+- 같은 사실(날짜·기간·금액·개수)은 글 전체에서 최대 3번까지만 쓰세요: 핵심 요약 1번, 해당 H2 1번, 마무리 또는 FAQ 중 1번. 도입부가 핵심 요약과 같은 사실을 반복하지 않게 하세요.
+- 경품·지원금·혜택은 추첨·선착순·심사 여부를 반드시 함께 쓰세요. (예: '아이패드 1대를 추첨으로 증정해요') 누구나 받는 것처럼 읽히게 쓰지 마세요.
+- FAQ에는 본문 H2에서 이미 답한 질문을 다시 넣지 마세요. 본문에서 다루지 못한, 검색자가 실제로 물을 법한 질문만 넣으세요. 그런 질문이 2개 미만이면 FAQ를 2개만 쓰세요.
+
 [검색형(SEARCH) 작성 규칙]
 - 검색 노출의 핵심은 키워드 반복량이 아니라 '검색의도 충족 + 정보 충실성 + 주제 집중도 + 최신성 + 차별 정보'입니다.
 - 첫 300~500자 안에 검색자가 가장 궁금한 답의 방향을 먼저 제시하세요. 서론을 길게 끌지 마세요.
@@ -1789,6 +1832,9 @@ AI 요약은 문단 전체가 아니라 '그 자체로 완결된 한두 문장'�
 
 [혼합형(HYBRID) 작성 규칙]
 - 서론은 홈판형처럼 공감과 궁금증으로 시작하고, 본문 구조는 검색형처럼 H2별 질문-답변으로 구성하세요.
+- 서론에서는 핵심 답을 1개만 먼저 주고(가장 급한 것, 예: 마감일), 나머지 답은 핵심 요약과 H2로 넘기세요. 서론에서 날짜·혜택·방법을 모두 공개하면 홈판 독자가 바로 이탈합니다.
+- 분석 데이터에 '왜 이번이 특별한지' 보여줄 확인된 사실(처음 적용·기념 회차·과거 화제·변화)이 있으면, 이를 다루는 H2를 1개 넣으세요. 이 H2는 홈판 독자를 끝까지 붙잡는 구간입니다. 확인된 사실이 없으면 만들지 마세요.
+- 정보 H2 사이에 블로거의 시선(추천·팁·공감 한두 문장)을 넣어 안내문처럼 읽히지 않게 하세요.
 - 제목·소제목이 약속한 날짜·혜택·결과는 확인된 사실로 반드시 회수하고, 확인된 사실을 추측 표현으로 대신하지 마세요.
 
 [본문 구조·서식]
@@ -1800,7 +1846,7 @@ AI 요약은 문단 전체가 아니라 '그 자체로 완결된 한두 문장'�
 - H2 형식 통일(필수): SEARCH/HYBRID는 한 글 안의 H2를 '질문형' 또는 '명사형' 중 하나로 통일하세요. 질문형은 독자가 실제로 묻는 질문에서 가져오고 반드시 물음표로 끝냅니다(예: '투표는 언제까지 할까요?'). 명사형은 핵심어로 끝냅니다(예: '투표 기간과 마감일'). '~일까', '~될까', '~할까', '~나요'처럼 질문 어미로 끝나면서 물음표가 없는 소제목은 금지입니다.
 - HOME_FEED의 H2는 문장형도 쓸 수 있습니다. 질문이면 물음표를 붙이고, 서술이면 마침표 없이 끝냅니다.
 {"- 마지막 H2 제목에는 '정리' 또는 '마무리'를 넣으세요. 예: '## 5. 한 번에 정리'. 앞의 핵심 요약을 그대로 반복하지 말고, 독자가 바로 할 행동 2~3가지로 짧게 정리하세요. 앱이 FAQ를 이 H2 바로 앞에 자동으로 넣습니다." if writing_options.get("include_summary", True) else "- 마지막에 '정리·마무리' 같은 별도 H2를 만들지 마세요. 마지막 H2 섹션이 끝난 뒤 소제목 없이 2~4문장의 짧은 마무리 문단으로 끝내세요. 핵심 요약을 반복하지 마세요."}
-{"- body_markdown 안에 FAQ 섹션을 따로 쓰지 마세요. FAQ는 faq 필드에만 3~6개 작성합니다. 본문에서 답하지 못한 독자 질문 중 제목·주제와 직접 관련된 것만 넣고, 주제와 동떨어진 질문(예: 체험단 글에 공무원 겸직 규정)은 넣지 마세요. 본문 내용을 그대로 반복하는 FAQ도 만들지 마세요." if writing_options.get("include_faq", True) else "- FAQ를 만들지 마세요. faq 필드는 빈 배열로 두고, body_markdown에도 FAQ 섹션을 쓰지 마세요. 독자 질문은 본문 H2 안에서 답하세요."}
+{"- body_markdown 안에 FAQ 섹션을 따로 쓰지 마세요. FAQ는 faq 필드에만 2~5개 작성합니다. 본문 H2에서 이미 답한 질문은 넣지 마세요. 본문에서 답하지 못한 독자 질문 중 제목·주제와 직접 관련된 것만 넣고, 주제와 동떨어진 질문(예: 체험단 글에 공무원 겸직 규정)은 넣지 마세요. 본문 내용을 그대로 반복하는 FAQ도 만들지 마세요." if writing_options.get("include_faq", True) else "- FAQ를 만들지 마세요. faq 필드는 빈 배열로 두고, body_markdown에도 FAQ 섹션을 쓰지 마세요. 독자 질문은 본문 H2 안에서 답하세요."}
 - 모바일 화면 기준으로 1~3문장마다 문단을 나누세요.
 
 [여행 정보·추천 콘텐츠 규칙 — is_travel_content가 true일 때]
@@ -2045,7 +2091,7 @@ def seo_check(article, analysis):
 
     faq_count = len(article.get("faq", []) or [])
     faq_expected = article.get("include_faq", True)
-    faq_ok = (not faq_expected) or faq_count >= (2 if mode == "HOME_FEED" else 3)
+    faq_ok = (not faq_expected) or faq_count >= 2
 
     tags = [str(t).strip().lstrip("#") for t in (article.get("tags", []) or []) if str(t).strip()]
     tags_ok = 5 <= len(tags) <= 30 and bool(keyword) and any(keyword.replace(" ", "") == t.replace(" ", "") for t in tags)
@@ -2881,8 +2927,10 @@ if analyze_clicked:
 
             # 명칭·오타 차이를 묻는 질문은 프롬프트로 한 번 거르고, 남아 있으면 코드에서 한 번 더 제외합니다.
             naming_q = re.compile(r"같은\s*(?:축제|행사|곳|것|제품|제도|사업|대회)\s*(?:인가요|인지|이에요|예요|맞나요)|다른\s*(?:이름|명칭)|명칭|오타|철자|띄어쓰기")
+            admin_q = re.compile(r"개인\s*정보|약관|보유\s*기간|파기|개별\s*공지|앱\s*푸시|SMS|나의\s*소식|알림방")
             payload["reader_questions"] = [
-                q for q in (payload.get("reader_questions") or []) if not naming_q.search(str(q))
+                q for q in (payload.get("reader_questions") or [])
+                if not naming_q.search(str(q)) and not admin_q.search(str(q))
             ]
 
             # Creator Advisor 입력 키워드는 항상 분석의 기준점으로 보존합니다.
@@ -3328,6 +3376,7 @@ if analysis:
                         article, problem = retry, retry_problem
                 article["truncation_warning"] = problem
                 article["body_markdown"] = normalize_question_headings(article.get("body_markdown", ""))
+                article["faq"] = dedupe_faq_against_body(article.get("faq", []) or [], article.get("body_markdown", ""))
                 # 사용자가 선택한 제목과 분석에서 확정한 메인키워드를 실제 발행 데이터에 고정합니다.
                 if selected_title:
                     article["seo_title"] = selected_title
